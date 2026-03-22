@@ -1,0 +1,13 @@
+Set price to 100
+Set quantity to 2
+Set tax rate to 0.1
+Set rounded units to the result of round(price * quantity / 3)
+Set rounded units precise to the result of round(price * quantity / 3, 2)
+Set floored units to the result of floor(price * quantity / 3)
+Set ceiled units to the result of ceil(price * quantity / 3)
+Set total always is the result of round(price * quantity * (1 + tax rate), 2)
+Print "Rounded units is (rounded units)".
+Print "Rounded units precise is (rounded units precise)".
+Print "Floored units is (floored units)".
+Print "Ceiled units is (ceiled units)".
+Print "Total is (total)".

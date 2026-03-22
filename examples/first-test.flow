@@ -1,0 +1,5 @@
+Set user age to 20
+Set pi to 3.14
+Set greeting to "Hello World"
+Print "Hello, World!"
+Print "Age is (user age)".

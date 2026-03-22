@@ -1,0 +1,10 @@
+Set title to "FlowScript Guide"
+Set greeting to "Hello, World!"
+Set first name to "Flow"
+Set last name to "Script"
+Set title status to title contains "Flow" and not title ends with "Draft"
+Set greeting status to greeting starts with "Hello" or greeting ends with "?"
+Set full name to first name joined with last name
+Print title status.
+Print greeting status.
+Print full name.

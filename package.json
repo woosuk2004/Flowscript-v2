@@ -1,0 +1,11 @@
+{
+  "name": "flowscript",
+  "private": true,
+  "packageManager": "pnpm@10.28.1",
+  "workspaces": [
+    "transpiler"
+  ],
+  "scripts": {
+    "test": "pnpm --dir transpiler test"
+  }
+}

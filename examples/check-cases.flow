@@ -1,0 +1,8 @@
+Set role to "editor"
+Check role:
+    Case "admin":
+        Print "Admin".
+    Case "editor":
+        Print "Editor".
+    Default:
+        Print "Guest".

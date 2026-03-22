@@ -1,0 +1,12 @@
+Create a List called raw orders defined as:
+    - {Email: "alice@example.com", Amount: 120, status: "Delivered"}
+    - {Email: "bob@example.com", Amount: 80, status: "Pending"}
+    - {Email: "charlie@example.com", Amount: 150, status: "Delivered"}
+    - {Email: "dana@example.com", Amount: 140, status: "Delivered"}
+Take raw orders:
+    Then filter where status is "Delivered"
+    Then sort by Amount descending
+    Then take the first 2 items
+    Then select Email
+    Then save to vip emails as a list
+Print "Top VIP Emails: " joined with vip emails.

@@ -1,0 +1,5 @@
+So Set total to the result of round(10 / 3, 2)
+Then Set total label to fixed(total, 2)
+That's why Print total label.
+Print "Use (( and ))".
+Print "Total is (total)".

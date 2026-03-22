@@ -1,0 +1,10 @@
+Set counter to 0
+Repeat 2 times:
+    Print "Tick".
+Keep doing this while counter is less than 2:
+    Print counter.
+    Set counter to the result of (counter + 1)
+Set countdown to 3
+Keep doing this until countdown is equal to 0:
+    Print countdown.
+    Set countdown to the result of (countdown - 1)

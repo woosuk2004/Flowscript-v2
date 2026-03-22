@@ -1,0 +1,7 @@
+Set user age to 20
+Set adult status to user age is greater than or equal to 18
+Set exact match to user age is equal to 20
+Set hidden status to user age is less than 10
+Print "Adult is (adult status)".
+Print "Exact is (exact match)".
+Print "Hidden is (hidden status)".

@@ -1,0 +1,13 @@
+Create a List called users defined as:
+    - {Name: "Alice", Age: 25, Active: Yes}
+    - {Name: "Bob", Age: 17, Active: No}
+    - {Name: "Charlie", Age: 30, Active: Yes}
+Create a List called adults from users where Age >= 20.
+Create a List called active names from users where Active is Yes select Name.
+Create a Set called tags defined as:
+    - "vip"
+    - "trial"
+    - "vip"
+Print adults.
+Print active names.
+Print tags.
