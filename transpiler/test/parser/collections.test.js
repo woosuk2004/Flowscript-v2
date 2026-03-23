@@ -28,6 +28,24 @@ test("parser builds derived collection declarations with where and select clause
   assert.equal(statement.select.type, "FieldReferenceExpression");
 });
 
+test("parser normalizes article words in collection names, sources, and pipeline targets", () => {
+  const declarationProgram = parse("Create a List called the users from the source users where Active is Yes select Name.");
+  const declaration = declarationProgram.body[0];
+
+  assert.deepEqual(declaration.nameParts, ["users"]);
+  assert.deepEqual(declaration.source.nameParts, ["source", "users"]);
+
+  const pipelineProgram = parse([
+    "Take the raw orders:",
+    "    Then select Email",
+    "    Then save to the vip emails as a list"
+  ].join("\n"));
+
+  const pipeline = pipelineProgram.body[0];
+  assert.deepEqual(pipeline.source.nameParts, ["raw", "orders"]);
+  assert.deepEqual(pipeline.steps[1].targetNameParts, ["vip", "emails"]);
+});
+
 test("parser builds collection pipelines with ordered transform steps", () => {
   const program = parse([
     "Take raw orders:",

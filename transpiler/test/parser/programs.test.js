@@ -6,19 +6,22 @@ import { parse } from "../../src/index.js";
 test("parser reads multiple sentence statements into one program", () => {
   const program = parse([
     "So Set price to 100",
+    "Also Set discount to 5",
     "Set quantity to 2",
     "Set total always is the result of round(price * quantity, 2)",
     "Set valid status to total is greater than 100",
     "Then Print total.",
+    "Therefore Print discount.",
+    "Meanwhile Print price.",
     "That's why Print valid status"
   ].join("\n"));
 
-  assert.equal(program.body.length, 6);
-  assert.equal(program.body[3].value.type, "ComparisonExpression");
-  assert.equal(program.body[4].type, "PrintStatement");
-  assert.equal(program.body[4].terminated, true);
+  assert.equal(program.body.length, 9);
+  assert.equal(program.body[4].value.type, "ComparisonExpression");
   assert.equal(program.body[5].type, "PrintStatement");
-  assert.equal(program.body[5].terminated, false);
+  assert.equal(program.body[5].terminated, true);
+  assert.equal(program.body[8].type, "PrintStatement");
+  assert.equal(program.body[8].terminated, false);
 });
 
 test("parser reads block statements alongside sentence statements", () => {
@@ -57,4 +60,19 @@ test("parser reads list and loop statements alongside existing block statements"
   assert.equal(program.body[1].body[0].type, "WhenStatement");
   assert.equal(program.body[2].type, "RepeatStatement");
   assert.equal(program.body[3].type, "WhileStatement");
+});
+
+test("parser reads break and continue inside loop bodies", () => {
+  const program = parse([
+    "Repeat 3 times:",
+    "    Break.",
+    "For each item in numbers:",
+    "    Continue"
+  ].join("\n"));
+
+  assert.equal(program.body.length, 2);
+  assert.equal(program.body[0].type, "RepeatStatement");
+  assert.equal(program.body[0].body[0].type, "BreakStatement");
+  assert.equal(program.body[1].type, "ForEachStatement");
+  assert.equal(program.body[1].body[0].type, "ContinueStatement");
 });

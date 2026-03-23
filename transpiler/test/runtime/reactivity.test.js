@@ -17,11 +17,11 @@ test("runtime recomputes always is bindings when dependencies change", () => {
 
 test("runtime throws a clear error for reactive dependency cycles", () => {
   const result = execute([
-    "Set a always is the result of (b + 1)",
-    "Set b always is the result of (a + 1)"
+    "Set alpha always is the result of (beta + 1)",
+    "Set beta always is the result of (alpha + 1)"
   ].join("\n"));
 
-  assert.throws(() => result.scope.get("a"), /Reactive cycle detected: a -> b -> a/);
+  assert.throws(() => result.scope.get("alpha"), /Reactive cycle detected: alpha -> beta -> alpha/);
 });
 
 test("runtime prints the current value of reactive expressions", () => {

@@ -25,6 +25,6 @@ If `price` changes later, `total` returns the updated value automatically.
 Reactive dependency cycles raise a runtime error.
 
 ```flow
-Set a always is the result of (b + 1)
-Set b always is the result of (a + 1)
+Set alpha always is the result of (beta + 1)
+Set beta always is the result of (alpha + 1)
 ```

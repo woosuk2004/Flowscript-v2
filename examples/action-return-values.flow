@@ -1,0 +1,26 @@
+Define a Type called User:
+    It has a public Name (Text).
+    It has a public IsActive (YesNo, default is Yes).
+
+    When created using name:
+        Set its Name to name.
+
+    It can "Get Display Name" and returns Text:
+        Return its Name.
+
+    It can "Get Label" using prefix and returns Text:
+        Return prefix joined with its Name.
+
+    It can "Is Ready" and returns YesNo:
+        Return its IsActive.
+
+Define a Type called Admin which is a kind of User:
+    It can "Get Display Name" and returns Text:
+        Return "Admin: " joined with the result of asking super to "Get Display Name".
+
+Create an Admin called admin user using "Alice".
+Set display name to the result of asking admin user to "Get Display Name".
+Print display name.
+Print the result of asking admin user to "Get Label" using "VIP: ".
+When the result of asking admin user to "Is Ready" is Yes:
+    Print "Ready".

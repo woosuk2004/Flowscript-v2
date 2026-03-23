@@ -1,0 +1,7 @@
+Define a Type called User:
+    It has a public Name (Text).
+
+    When created using name:
+        Set its Name to name.
+
+Share User.

@@ -25,4 +25,24 @@ test("parser rejects soft words outside leading statement position", () => {
     assert.match(error.message, /Soft words are only allowed/);
     return true;
   });
+
+  assert.throws(() => parse("Set total to also"), (error) => {
+    assert.ok(error instanceof ParserError);
+    assert.match(error.message, /Soft words are only allowed/);
+    return true;
+  });
+});
+
+test("parser rejects break and continue outside loops", () => {
+  assert.throws(() => parse("Break"), (error) => {
+    assert.ok(error instanceof ParserError);
+    assert.match(error.message, /Break is only allowed inside loops/);
+    return true;
+  });
+
+  assert.throws(() => parse("Continue"), (error) => {
+    assert.ok(error instanceof ParserError);
+    assert.match(error.message, /Continue is only allowed inside loops/);
+    return true;
+  });
 });

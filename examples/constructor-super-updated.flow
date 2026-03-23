@@ -1,0 +1,23 @@
+Define a Type called User:
+    It has a public Name (Text).
+    It has a private Status Note (Text, default is "new").
+
+    When created using name:
+        Set its Name to name.
+
+    When updated:
+        Set its Status Note to "changed".
+
+    It can "Rename" as public using new name:
+        Set its Name to new name.
+        Print its Name.
+
+Define a Type called Admin which is a kind of User:
+    It can "Rename" as public using new name:
+        Ask super to "Rename" using new name.
+        Print "Renamed by admin.".
+
+Create an Admin called admin user using "Alice".
+Print admin user.
+Ask admin user to "Rename" using "Bob".
+Print admin user.

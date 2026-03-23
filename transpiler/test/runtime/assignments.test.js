@@ -51,3 +51,15 @@ test("runtime joins strings with joined with", () => {
   assert.equal(result.scope.get("full name"), "FlowScript");
   assert.deepEqual(result.output, ["FlowScript"]);
 });
+
+test("runtime resolves article-prefixed names to the same canonical variable", () => {
+  const result = execute([
+    "Set the user age to 20",
+    "Print a user age.",
+    "Print the user age."
+  ].join("\n"));
+
+  assert.equal(result.scope.get("user age"), 20);
+  assert.equal(result.scope.get("the user age"), 20);
+  assert.deepEqual(result.output, ["20", "20"]);
+});

@@ -1,0 +1,26 @@
+Set prefix to "Hello, ".
+
+Set formatter to the result of this using name and returns Text:
+    Ensure name is not equal to "".
+    Set label to prefix joined with name
+    Verify label contains name.
+    Return label.
+
+Set logger to do this using message:
+    Ensure message is not equal to "".
+    Print message.
+
+How to apply formatter using formatter and name and returns Text:
+    Return the result of formatter using name.
+
+Define a Type called Runner:
+    It has a public Formatter (Function).
+
+Create a Runner called runner:
+    Formatter is formatter
+
+Set runner formatter to the Formatter of runner
+
+Print the result of formatter using "FlowScript".
+logger using "ok".
+Print the result of apply formatter using runner formatter and "Alice".

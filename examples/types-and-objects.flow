@@ -1,0 +1,39 @@
+Define a Type called User:
+    It has a public Name (Text).
+    It has a protected Email (Text).
+    It has a private Audit Note (Text, default is "created").
+    It has Points (Number, default is 0).
+    It has IsActive (YesNo, default is Yes).
+
+    When created using name, email:
+        Set its Name to name.
+        Set its Email to email.
+        Set its Points to the result of (its Points + 10).
+        Set its Audit Note to "created through constructor".
+
+    When updated:
+        Set its Audit Note to "updated".
+
+    It can "Normalize Email" as protected:
+        Print "Normalizing email.".
+
+    It can "Update Email" as public using new email:
+        Ask itself to "Normalize Email".
+        Set its Email to new email.
+        Print its Email.
+
+Define a Type called Admin which is a kind of User:
+    It has a public Permissions (List of Text).
+
+    When created using name, email, permissions:
+        Set its Permissions to permissions.
+
+    It can "Update Email" as public using new email:
+        Ask super to "Update Email" using new email.
+        Print "Admin email forced update.".
+
+Create an Admin called admin user using "Alice", "alice@example.com", the list of ("manage users", "billing").
+Print the Name of admin user.
+Print the Points of admin user.
+Ask admin user to "Update Email" using "owner@example.com".
+Print admin user.

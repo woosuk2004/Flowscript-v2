@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { dirname, normalize as normalizePath, resolve as resolvePath } from "node:path";
 
 import { parse } from "../parser/parser.js";
 import { TOKEN_KINDS } from "../tokens/token-kinds.js";
@@ -6,28 +7,70 @@ import { TOKEN_KINDS } from "../tokens/token-kinds.js";
 const RUNTIME_SOURCE = String.raw`
 function createFlowScriptRuntime() {
   const cells = new Map();
+  const types = new Map();
+  const functions = new Map();
+  const modules = new Map();
   const evaluationStack = [];
-  const makeContext = (parent = null, locals = Object.create(null)) => ({
-    get(name) {
-      if (Object.prototype.hasOwnProperty.call(locals, name)) {
-        return locals[name];
+  const noValue = Object.freeze({ __flowKind: "NO_VALUE" });
+  const normalizeName = (name) => String(name)
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter((part) => !["a", "an", "the"].includes(part.toLowerCase()))
+    .join(" ");
+  const makeContext = (parent = null, locals = Object.create(null), localTarget = null) => ({
+    __flowLocalTarget: localTarget,
+    has(name) {
+      const normalizedName = normalizeName(name);
+
+      if (Object.prototype.hasOwnProperty.call(locals, normalizedName)) {
+        return true;
       }
 
       if (parent) {
-        return parent.get(name);
+        return parent.has(normalizedName);
       }
 
-      return runtime.get(name);
+      return runtime.has(normalizedName);
+    },
+    get(name) {
+      const normalizedName = normalizeName(name);
+
+      if (Object.prototype.hasOwnProperty.call(locals, normalizedName)) {
+        return locals[normalizedName];
+      }
+
+      if (parent) {
+        return parent.get(normalizedName);
+      }
+
+      return runtime.get(normalizedName);
+    },
+    setLocal(name, value) {
+      const normalizedName = normalizeName(name);
+
+      if (localTarget) {
+        localTarget[normalizedName] = value;
+        return value;
+      }
+
+      if (parent) {
+        return parent.setLocal(normalizedName, value);
+      }
+
+      return runtime.set(normalizedName, value);
     }
   });
   const runtime = {
     output: [],
+    noValue,
+    normalizeName,
     set(name, value) {
-      cells.set(name, { kind: "static", value });
+      cells.set(normalizeName(name), { kind: "static", value });
       return value;
     },
     defineReactive(name, evaluator, definitionContext = runtime.context) {
-      cells.set(name, { kind: "reactive", evaluator, definitionContext });
+      cells.set(normalizeName(name), { kind: "reactive", evaluator, definitionContext });
     },
     round(value, precision = 0) {
       const factor = 10 ** precision;
@@ -45,6 +88,33 @@ function createFlowScriptRuntime() {
     },
     primitiveKey(value) {
       return typeof value + ":" + String(value);
+    },
+    normalizeActionName(name) {
+      return String(name);
+    },
+    normalizeFunctionName(name) {
+      return normalizeName(name);
+    },
+    isCallable(value) {
+      return Boolean(value && typeof value === "object" && value.__flowKind === "CALLABLE");
+    },
+    isModuleNamespace(value) {
+      return Boolean(value && typeof value === "object" && value.__flowKind === "MODULE_NAMESPACE");
+    },
+    typeRefsEqual(left, right) {
+      if (!left || !right) {
+        return left === right;
+      }
+
+      if (left.kind !== right.kind) {
+        return false;
+      }
+
+      if (left.kind === "list") {
+        return runtime.typeRefsEqual(left.itemType, right.itemType);
+      }
+
+      return normalizeName(left.name) === normalizeName(right.name);
     },
     createList(items) {
       return items.slice();
@@ -73,6 +143,111 @@ function createFlowScriptRuntime() {
       }
 
       return value;
+    },
+    isNoValue(value) {
+      return value === noValue;
+    },
+    normalizeIntegerIndex(value) {
+      if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value)) {
+        return null;
+      }
+
+      return value;
+    },
+    normalizeTakeCount(value) {
+      const normalized = runtime.normalizeIntegerIndex(value);
+
+      if (normalized === null || normalized <= 0) {
+        return 0;
+      }
+
+      return normalized;
+    },
+    firstItemOf(collection) {
+      const normalized = runtime.asCollection(collection);
+      return normalized.length === 0 ? noValue : normalized[0];
+    },
+    lastItemOf(collection) {
+      const normalized = runtime.asCollection(collection);
+      return normalized.length === 0 ? noValue : normalized[normalized.length - 1];
+    },
+    itemAtIndex(collection, index) {
+      const normalized = runtime.asCollection(collection);
+      const normalizedIndex = runtime.normalizeIntegerIndex(index);
+
+      if (normalizedIndex === null || normalizedIndex < 0 || normalizedIndex >= normalized.length) {
+        return noValue;
+      }
+
+      return normalized[normalizedIndex];
+    },
+    firstItemsOf(collection, count) {
+      const normalized = runtime.asCollection(collection);
+      return normalized.slice(0, runtime.normalizeTakeCount(count));
+    },
+    lastItemsOf(collection, count) {
+      const normalized = runtime.asCollection(collection);
+      const takeCount = runtime.normalizeTakeCount(count);
+
+      if (takeCount === 0) {
+        return [];
+      }
+
+      return normalized.slice(Math.max(0, normalized.length - takeCount));
+    },
+    itemsFromIndexToIndex(collection, start, end) {
+      const normalized = runtime.asCollection(collection);
+      const normalizedStart = runtime.normalizeIntegerIndex(start);
+      const normalizedEnd = runtime.normalizeIntegerIndex(end);
+
+      if (normalizedStart === null || normalizedEnd === null || normalized.length === 0) {
+        return [];
+      }
+
+      const startIndex = Math.max(0, normalizedStart);
+      const endIndex = Math.min(normalized.length - 1, normalizedEnd);
+
+      if (endIndex < startIndex) {
+        return [];
+      }
+
+      return normalized.slice(startIndex, endIndex + 1);
+    },
+    valuesEqual(left, right) {
+      if (runtime.isNoValue(left) || runtime.isNoValue(right)) {
+        return left === right;
+      }
+
+      if (runtime.isPrimitive(left) && runtime.isPrimitive(right)) {
+        return runtime.primitiveKey(left) === runtime.primitiveKey(right);
+      }
+
+      return left === right;
+    },
+    indexOfItem(collection, item) {
+      const normalized = runtime.asCollection(collection);
+      const index = normalized.findIndex((candidate) => runtime.valuesEqual(candidate, item));
+      return index === -1 ? noValue : index;
+    },
+    countOf(collection) {
+      return runtime.asCollection(collection).length;
+    },
+    isCollectionEmpty(collection) {
+      return runtime.countOf(collection) === 0;
+    },
+    collectionContainsItem(collection, item) {
+      if (!runtime.isPrimitive(item)) {
+        return false;
+      }
+
+      const targetKey = runtime.primitiveKey(item);
+      return runtime.asCollection(collection).some((candidate) => runtime.isPrimitive(candidate) && runtime.primitiveKey(candidate) === targetKey);
+    },
+    collectionHasAnyOf(collection, items) {
+      return items.some((item) => runtime.isPrimitive(item) && runtime.collectionContainsItem(collection, item));
+    },
+    collectionHasAllOf(collection, items) {
+      return items.every((item) => runtime.isPrimitive(item) && runtime.collectionContainsItem(collection, item));
     },
     repeatCount(value) {
       if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
@@ -122,23 +297,591 @@ function createFlowScriptRuntime() {
     takeFirstItems(collection, count) {
       return runtime.asCollection(collection).slice(0, runtime.repeatCount(count));
     },
-    get(name) {
-      if (!cells.has(name)) {
-        throw new Error('Undefined variable "' + name + '"');
+    accessLevelRank(accessLevel) {
+      if (accessLevel === "private") {
+        return 0;
       }
 
-      const cell = cells.get(name);
+      if (accessLevel === "protected") {
+        return 1;
+      }
+
+      return 2;
+    },
+    isTypeNameKindOf(typeName, ancestorTypeName) {
+      let currentType = runtime.getType(typeName);
+      const normalizedAncestorTypeName = normalizeName(ancestorTypeName);
+
+      while (currentType) {
+        if (currentType.normalizedName === normalizedAncestorTypeName) {
+          return true;
+        }
+
+        currentType = currentType.parentTypeName ? runtime.getType(currentType.parentTypeName) : null;
+      }
+
+      return false;
+    },
+    canAccessMember(member, accessContext = null) {
+      if (member.accessLevel === "public") {
+        return true;
+      }
+
+      if (!accessContext || accessContext.kind !== "internal" || !accessContext.declaringTypeName) {
+        return false;
+      }
+
+      const normalizedCallerTypeName = normalizeName(accessContext.declaringTypeName);
+      if (member.accessLevel === "private") {
+        return normalizedCallerTypeName === member.declaredOnTypeName;
+      }
+
+      return runtime.isTypeNameKindOf(normalizedCallerTypeName, member.declaredOnTypeName);
+    },
+    finalizeActionResult(action, result, expectReturn = false) {
+      if (expectReturn && !action.returnType) {
+        throw new Error('Action "' + action.name + '" does not declare a return value');
+      }
+
+      if (!action.returnType) {
+        return result;
+      }
+
+      if (result === undefined) {
+        throw new Error('Action "' + action.name + '" must return a value');
+      }
+
+      runtime.validateType(result, action.returnType, 'Return value of action "' + action.name + '"');
+      return result;
+    },
+    finalizeFunctionResult(definition, result, expectReturn = false) {
+      if (expectReturn && !definition.returnType) {
+        throw new Error('Function "' + definition.displayName + '" does not declare a return value');
+      }
+
+      if (!definition.returnType) {
+        return result;
+      }
+
+      if (result === undefined) {
+        throw new Error('Function "' + definition.displayName + '" must return a value');
+      }
+
+      runtime.validateType(result, definition.returnType, 'Return value of function "' + definition.displayName + '"');
+      return result;
+    },
+    assertContract(kind, functionName, description, passed) {
+      if (!passed) {
+        const label = kind === "ensure" ? "Ensure" : "Verify";
+        throw new Error(label + ' failed in "' + functionName + '": ' + description);
+      }
+    },
+    defineFunction(name, definition) {
+      const normalizedName = runtime.normalizeFunctionName(name);
+
+      functions.set(normalizedName, {
+        __flowKind: "CALLABLE",
+        ...definition,
+        displayName: String(name),
+        normalizedName
+      });
+    },
+    createAnonymousCallable(definition, closureContext = runtime.context) {
+      return {
+        __flowKind: "CALLABLE",
+        ...definition,
+        displayName: definition.displayName ?? "anonymous function",
+        closureContext
+      };
+    },
+    getFunction(name) {
+      const normalizedName = runtime.normalizeFunctionName(name);
+
+      if (!functions.has(normalizedName)) {
+        throw new Error('Undefined function "' + normalizedName + '"');
+      }
+
+      return functions.get(normalizedName);
+    },
+    defineModule(moduleId, displayName, exportEntries) {
+      const exports = new Map();
+
+      for (const entry of exportEntries) {
+        exports.set(normalizeName(entry.exportName), entry);
+      }
+
+      const namespace = {
+        __flowKind: "MODULE_NAMESPACE",
+        moduleId,
+        displayName
+      };
+
+      modules.set(moduleId, {
+        id: moduleId,
+        displayName,
+        exports,
+        namespace
+      });
+    },
+    getModuleNamespace(moduleId) {
+      const moduleRecord = modules.get(moduleId);
+
+      if (!moduleRecord) {
+        throw new Error('Undefined module "' + moduleId + '"');
+      }
+
+      return moduleRecord.namespace;
+    },
+    getModuleExport(moduleId, exportName) {
+      const moduleRecord = modules.get(moduleId);
+
+      if (!moduleRecord) {
+        throw new Error('Undefined module "' + moduleId + '"');
+      }
+
+      const normalizedExportName = normalizeName(exportName);
+      const entry = moduleRecord.exports.get(normalizedExportName);
+
+      if (!entry) {
+        throw new Error('Module "' + moduleRecord.displayName + '" does not share "' + normalizedExportName + '"');
+      }
+
+      if (entry.kind === "function") {
+        return runtime.getFunction(entry.internalName);
+      }
+
+      if (entry.kind === "type") {
+        return runtime.getType(entry.internalName);
+      }
+
+      return runtime.get(entry.internalName);
+    },
+    resolveCallable(target, parentContext = runtime.context) {
+      if (runtime.isCallable(target)) {
+        return target;
+      }
+
+      if (typeof target !== "string") {
+        throw new Error("Expected a callable value");
+      }
+
+      const normalizedName = runtime.normalizeFunctionName(target);
+
+      if (parentContext?.has(normalizedName)) {
+        const value = parentContext.get(normalizedName);
+
+        if (!runtime.isCallable(value)) {
+          throw new Error('"' + normalizedName + '" is not callable');
+        }
+
+        return value;
+      }
+
+      return runtime.getFunction(normalizedName);
+    },
+    callFunction(target, args = [], parentContext = runtime.context, expectReturn = false) {
+      const definition = runtime.resolveCallable(target, parentContext);
+
+      if (args.length !== definition.params.length) {
+        throw new Error('Function "' + definition.displayName + '" expects ' + definition.params.length + " argument(s)");
+      }
+
+      return runtime.finalizeFunctionResult(definition, definition.body(args, definition.closureContext ?? parentContext), expectReturn);
+    },
+    defineType(name, definition) {
+      const normalizedName = normalizeName(name);
+      const parentDefinition = definition.parentTypeName ? runtime.getType(definition.parentTypeName) : null;
+      const properties = [];
+      const propertyMap = new Map();
+
+      if (parentDefinition) {
+        for (const property of parentDefinition.properties) {
+          properties.push(property);
+          propertyMap.set(property.normalizedName, property);
+        }
+      }
+
+      for (const property of definition.properties) {
+        if (propertyMap.has(property.normalizedName)) {
+          throw new Error('Property "' + property.displayName + '" is already defined on type "' + definition.displayName + '"');
+        }
+
+        const resolvedProperty = {
+          ...property,
+          accessLevel: property.accessLevel ?? "public",
+          declaredOnTypeName: normalizedName
+        };
+        properties.push(resolvedProperty);
+        propertyMap.set(property.normalizedName, resolvedProperty);
+      }
+
+      const actions = new Map();
+      if (parentDefinition) {
+        for (const [actionName, bucket] of parentDefinition.actions.entries()) {
+          actions.set(actionName, bucket.slice());
+        }
+      }
+
+      const ownActionNames = new Set();
+
+      for (const action of definition.actions) {
+        const normalizedActionName = runtime.normalizeActionName(action.name);
+        if (ownActionNames.has(normalizedActionName)) {
+          throw new Error('Action "' + action.name + '" is already defined on type "' + definition.displayName + '"');
+        }
+
+        ownActionNames.add(normalizedActionName);
+        const existingBucket = actions.get(normalizedActionName) ?? [];
+        const overrideTarget = [...existingBucket].reverse().find((candidate) => candidate.accessLevel !== "private");
+        const resolvedAction = {
+          ...action,
+          accessLevel: action.accessLevel ?? "public",
+          declaredOnTypeName: normalizedName
+        };
+
+        if (overrideTarget && runtime.accessLevelRank(resolvedAction.accessLevel) < runtime.accessLevelRank(overrideTarget.accessLevel)) {
+          throw new Error(
+            'Action "' +
+              action.name +
+              '" on type "' +
+              definition.displayName +
+              '" cannot narrow visibility from ' +
+              overrideTarget.accessLevel +
+              " to " +
+              resolvedAction.accessLevel
+          );
+        }
+
+        if (overrideTarget && !runtime.typeRefsEqual(resolvedAction.returnType ?? null, overrideTarget.returnType ?? null)) {
+          throw new Error(
+            'Action "' + action.name + '" on type "' + definition.displayName + '" must keep the same return type as the parent action'
+          );
+        }
+
+        existingBucket.push(resolvedAction);
+        actions.set(normalizedActionName, existingBucket);
+      }
+
+      const resolvedDefinition = {
+        displayName: definition.displayName,
+        normalizedName,
+        parentTypeName: parentDefinition ? parentDefinition.normalizedName : null,
+        properties,
+        propertyMap,
+        actions,
+        constructorArity: Math.max(parentDefinition ? parentDefinition.constructorArity : 0, definition.createdHook ? definition.createdHook.params.length : 0),
+        createdHooks: [
+          ...(parentDefinition ? parentDefinition.createdHooks : []),
+          ...(definition.createdHook ? [{ ...definition.createdHook, declaredOnTypeName: normalizedName }] : [])
+        ],
+        updatedHooks: [
+          ...(parentDefinition ? parentDefinition.updatedHooks : []),
+          ...(definition.updatedHook ? [{ ...definition.updatedHook, declaredOnTypeName: normalizedName }] : [])
+        ]
+      };
+
+      types.set(normalizedName, resolvedDefinition);
+      return resolvedDefinition;
+    },
+    getType(name) {
+      const normalizedName = normalizeName(name);
+
+      if (!types.has(normalizedName)) {
+        throw new Error('Undefined type "' + normalizedName + '"');
+      }
+
+      return types.get(normalizedName);
+    },
+    isInstance(value) {
+      return Boolean(value && typeof value === "object" && value.__flowKind === "INSTANCE");
+    },
+    isInstanceOfType(value, typeName) {
+      if (!runtime.isInstance(value)) {
+        return false;
+      }
+
+      const expectedType = runtime.getType(typeName);
+      let currentType = runtime.getType(value.typeName);
+
+      while (currentType) {
+        if (currentType.normalizedName === expectedType.normalizedName) {
+          return true;
+        }
+
+        currentType = currentType.parentTypeName ? runtime.getType(currentType.parentTypeName) : null;
+      }
+
+      return false;
+    },
+    validateType(value, typeRef, context = "value") {
+      if (typeRef.kind === "list") {
+        if (!Array.isArray(value)) {
+          throw new Error(context + " must be a list");
+        }
+
+        for (const item of value) {
+          runtime.validateType(item, typeRef.itemType, context + " item");
+        }
+
+        return;
+      }
+
+      const normalizedTypeName = normalizeName(typeRef.name);
+      if (normalizedTypeName.toLowerCase() === "text") {
+        if (typeof value !== "string") {
+          throw new Error(context + " must be Text");
+        }
+        return;
+      }
+
+      if (normalizedTypeName.toLowerCase() === "number") {
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+          throw new Error(context + " must be Number");
+        }
+        return;
+      }
+
+      if (normalizedTypeName.toLowerCase() === "yesno") {
+        if (typeof value !== "boolean") {
+          throw new Error(context + " must be YesNo");
+        }
+        return;
+      }
+
+      if (normalizedTypeName.toLowerCase() === "function") {
+        if (!runtime.isCallable(value)) {
+          throw new Error(context + " must be Function");
+        }
+        return;
+      }
+
+      if (!runtime.isInstanceOfType(value, normalizedTypeName)) {
+        throw new Error(context + ' must be a "' + typeRef.displayName + '"');
+      }
+    },
+    createInstance(typeName, constructorArgs = [], initialValues = new Map()) {
+      const typeDefinition = runtime.getType(typeName);
+      const values = Object.create(null);
+
+      if (constructorArgs.length !== typeDefinition.constructorArity) {
+        throw new Error('Type "' + typeDefinition.displayName + '" expects ' + typeDefinition.constructorArity + " constructor argument(s)");
+      }
+
+      for (const property of typeDefinition.properties) {
+        if (initialValues.has(property.normalizedName)) {
+          const value = initialValues.get(property.normalizedName);
+          runtime.validateType(value, property.typeRef, 'Property "' + property.displayName + '"');
+          values[property.normalizedName] = value;
+          continue;
+        }
+
+        if (property.hasDefault) {
+          const defaultValue = property.defaultEvaluator(runtime.context);
+          runtime.validateType(defaultValue, property.typeRef, 'Property "' + property.displayName + '"');
+          values[property.normalizedName] = defaultValue;
+        }
+      }
+
+      for (const propertyName of initialValues.keys()) {
+        if (!typeDefinition.propertyMap.has(propertyName)) {
+          throw new Error('Unknown property "' + propertyName + '" for type "' + typeDefinition.displayName + '"');
+        }
+      }
+
+      const instance = {
+        __flowKind: "INSTANCE",
+        typeName: typeDefinition.normalizedName,
+        values,
+        __flowSuppressUpdatedHooks: true,
+        __flowRunningUpdatedHooks: false
+      };
+
+      for (const createdHook of typeDefinition.createdHooks) {
+        createdHook.body(instance, constructorArgs);
+      }
+
+      instance.__flowSuppressUpdatedHooks = false;
+
+      for (const property of typeDefinition.properties) {
+        if (!(property.normalizedName in instance.values)) {
+          throw new Error('Missing required property "' + property.displayName + '" for type "' + typeDefinition.displayName + '"');
+        }
+
+        runtime.validateType(instance.values[property.normalizedName], property.typeRef, 'Property "' + property.displayName + '"');
+      }
+
+      return instance;
+    },
+    getProperty(instance, propertyName, accessContext = null) {
+      if (runtime.isModuleNamespace(instance)) {
+        return runtime.getModuleExport(instance.moduleId, propertyName);
+      }
+
+      if (!runtime.isInstance(instance)) {
+        throw new Error("Expected an instance value");
+      }
+
+      const typeDefinition = runtime.getType(instance.typeName);
+      const normalizedPropertyName = normalizeName(propertyName);
+      const property = typeDefinition.propertyMap.get(normalizedPropertyName);
+
+      if (!property) {
+        throw new Error('Unknown property "' + normalizedPropertyName + '" on type "' + typeDefinition.displayName + '"');
+      }
+
+      if (!runtime.canAccessMember(property, accessContext)) {
+        throw new Error(
+          'Cannot access ' +
+            property.accessLevel +
+            ' property "' +
+            property.displayName +
+            '" on type "' +
+            typeDefinition.displayName +
+            '"'
+        );
+      }
+
+      return instance.values[normalizedPropertyName];
+    },
+    setProperty(instance, propertyName, value, accessContext = null) {
+      if (runtime.isModuleNamespace(instance)) {
+        throw new Error('Cannot assign to shared module value "' + normalizeName(propertyName) + '"');
+      }
+
+      if (!runtime.isInstance(instance)) {
+        throw new Error("Expected an instance value");
+      }
+
+      const typeDefinition = runtime.getType(instance.typeName);
+      const normalizedPropertyName = normalizeName(propertyName);
+      const property = typeDefinition.propertyMap.get(normalizedPropertyName);
+
+      if (!property) {
+        throw new Error('Unknown property "' + normalizedPropertyName + '" on type "' + typeDefinition.displayName + '"');
+      }
+
+      if (!runtime.canAccessMember(property, accessContext)) {
+        throw new Error(
+          'Cannot access ' +
+            property.accessLevel +
+            ' property "' +
+            property.displayName +
+            '" on type "' +
+            typeDefinition.displayName +
+            '"'
+        );
+      }
+
+      runtime.validateType(value, property.typeRef, 'Property "' + property.displayName + '"');
+      instance.values[normalizedPropertyName] = value;
+
+      if (!instance.__flowSuppressUpdatedHooks && !instance.__flowRunningUpdatedHooks) {
+        runtime.runUpdatedHooks(instance);
+      }
+
+      return value;
+    },
+    runUpdatedHooks(instance) {
+      if (!runtime.isInstance(instance)) {
+        throw new Error("Expected an instance value");
+      }
+
+      const typeDefinition = runtime.getType(instance.typeName);
+      if (typeDefinition.updatedHooks.length === 0) {
+        return;
+      }
+
+      instance.__flowRunningUpdatedHooks = true;
+
+      try {
+        for (const updatedHook of typeDefinition.updatedHooks) {
+          updatedHook.body(instance);
+        }
+      } finally {
+        instance.__flowRunningUpdatedHooks = false;
+      }
+    },
+    callAction(instance, actionName, args = [], accessContext = null, expectReturn = false) {
+      if (!runtime.isInstance(instance)) {
+        throw new Error("Expected an instance value");
+      }
+
+      const typeDefinition = runtime.getType(instance.typeName);
+      const normalizedActionName = runtime.normalizeActionName(actionName);
+      const bucket = typeDefinition.actions.get(normalizedActionName);
+
+      if (!bucket || bucket.length === 0) {
+        throw new Error('Unknown action "' + actionName + '" on type "' + typeDefinition.displayName + '"');
+      }
+
+      let action = null;
+      if (accessContext && accessContext.kind === "internal" && accessContext.declaringTypeName) {
+        const normalizedCallerTypeName = normalizeName(accessContext.declaringTypeName);
+        action = [...bucket].reverse().find((candidate) => candidate.declaredOnTypeName === normalizedCallerTypeName && candidate.accessLevel === "private") ?? null;
+      }
+
+      if (!action) {
+        action = [...bucket].reverse().find((candidate) => runtime.canAccessMember(candidate, accessContext)) ?? null;
+      }
+
+      if (!action) {
+        throw new Error('Cannot call action "' + actionName + '" on type "' + typeDefinition.displayName + '"');
+      }
+
+      if (args.length !== action.params.length) {
+        throw new Error('Action "' + actionName + '" expects ' + action.params.length + " argument(s)");
+      }
+
+      return runtime.finalizeActionResult(action, action.body(instance, args), expectReturn);
+    },
+    callSuperAction(instance, fromTypeName, actionName, args = [], accessContext = null, expectReturn = false) {
+      if (!runtime.isInstance(instance)) {
+        throw new Error("Expected an instance value");
+      }
+
+      const currentType = runtime.getType(fromTypeName);
+      const normalizedActionName = runtime.normalizeActionName(actionName);
+      let ancestorTypeName = currentType.parentTypeName;
+
+      while (ancestorTypeName) {
+        const ancestorType = runtime.getType(ancestorTypeName);
+        const bucket = ancestorType.actions.get(normalizedActionName) ?? [];
+        const candidate = [...bucket].reverse().find(
+          (action) => action.declaredOnTypeName === ancestorType.normalizedName && runtime.canAccessMember(action, accessContext)
+        );
+
+        if (candidate) {
+          if (args.length !== candidate.params.length) {
+            throw new Error('Action "' + actionName + '" expects ' + candidate.params.length + " argument(s)");
+          }
+
+          return runtime.finalizeActionResult(candidate, candidate.body(instance, args), expectReturn);
+        }
+
+        ancestorTypeName = ancestorType.parentTypeName;
+      }
+
+      throw new Error('No parent action "' + actionName + '" exists for type "' + currentType.displayName + '"');
+    },
+    get(name) {
+      const normalizedName = normalizeName(name);
+
+      if (!cells.has(normalizedName)) {
+        throw new Error('Undefined variable "' + normalizedName + '"');
+      }
+
+      const cell = cells.get(normalizedName);
       if (cell.kind === "static") {
         return cell.value;
       }
 
-      const cycleStart = evaluationStack.indexOf(name);
+      const cycleStart = evaluationStack.indexOf(normalizedName);
       if (cycleStart !== -1) {
-        const cycle = evaluationStack.slice(cycleStart).concat(name).join(" -> ");
+        const cycle = evaluationStack.slice(cycleStart).concat(normalizedName).join(" -> ");
         throw new Error('Reactive cycle detected: ' + cycle);
       }
 
-      evaluationStack.push(name);
+      evaluationStack.push(normalizedName);
       try {
         return cell.evaluator(cell.definitionContext ?? runtime.context);
       } finally {
@@ -146,8 +889,25 @@ function createFlowScriptRuntime() {
       }
     },
     formatValue(value) {
+      if (runtime.isNoValue(value)) {
+        return "no value";
+      }
+
+      if (runtime.isCallable(value)) {
+        return value.displayName ?? "anonymous function";
+      }
+
+      if (runtime.isModuleNamespace(value)) {
+        return value.displayName;
+      }
+
       if (Array.isArray(value)) {
         return "[" + value.map((item) => runtime.formatValue(item)).join(", ") + "]";
+      }
+
+      if (runtime.isInstance(value)) {
+        const typeDefinition = runtime.getType(value.typeName);
+        return typeDefinition.displayName + "{" + typeDefinition.properties.map((property) => property.displayName + ": " + runtime.formatValue(value.values[property.normalizedName])).join(", ") + "}";
       }
 
       if (value && typeof value === "object") {
@@ -189,16 +949,10 @@ function createFlowScriptRuntime() {
         }
 
         const rawName = source.slice(index + 1, closeIndex);
-        const normalizedName = rawName
-          .trim()
-          .split(/\s+/)
-          .filter(Boolean)
-          .join(" ");
+        const normalizedName = normalizeName(rawName);
 
         if (!normalizedName) {
-          output += "()";
-          index = closeIndex;
-          continue;
+          throw new Error('Invalid interpolation reference "' + rawName + '"');
         }
 
         if (!/^[_A-Za-z][_A-Za-z0-9']*(\s+[_A-Za-z][_A-Za-z0-9']*)*$/.test(normalizedName)) {
@@ -212,14 +966,15 @@ function createFlowScriptRuntime() {
       return output;
     },
     has(name) {
-      return cells.has(name);
+      return cells.has(normalizeName(name));
     },
-    makeChildContext(parent, locals) {
-      return makeContext(parent, locals);
+    makeChildContext(parent, locals, localTarget = undefined) {
+      return makeContext(parent, locals, localTarget === undefined ? parent?.__flowLocalTarget ?? null : localTarget);
     }
   };
 
   runtime.context = makeContext();
+  runtime.context.__flowLocalTarget = null;
   return runtime;
 }
 `;
@@ -245,13 +1000,38 @@ const LOGICAL_OPERATOR_MAP = {
   [TOKEN_KINDS.OR]: "||"
 };
 
+const ACCESS_LEVEL_RANKS = {
+  private: 0,
+  protected: 1,
+  public: 2
+};
+
+function areTypeReferencesEquivalent(left, right) {
+  if (left === null || right === null) {
+    return left === right;
+  }
+
+  if (left.kind !== right.kind) {
+    return false;
+  }
+
+  if (left.kind === "list") {
+    return areTypeReferencesEquivalent(left.itemType, right.itemType);
+  }
+
+  return normalizeStaticName(left.nameParts) === normalizeStaticName(right.nameParts);
+}
+
+let compilerStateRef = null;
+
 export function transpile(source) {
   return transpileProgram(parse(source));
 }
 
 export async function transpileFile(path) {
-  const source = await readFile(path, "utf8");
-  return transpile(source);
+  const entryPath = resolvePath(path);
+  const moduleGraph = await buildModuleGraph(entryPath);
+  return transpileModuleGraph(moduleGraph);
 }
 
 export function execute(source) {
@@ -260,12 +1040,18 @@ export function execute(source) {
 }
 
 export async function executeFile(path) {
-  const source = await readFile(path, "utf8");
-  return execute(source);
+  const compiled = await transpileFile(path);
+  return new Function(`return ${compiled};`)();
 }
 
 export function transpileProgram(program) {
-  const compilerState = { tempIndex: 0 };
+  const compilerState = {
+    tempIndex: 0,
+    knownTypes: new Map(),
+    knownFunctions: new Map(),
+    variableTypes: new Map()
+  };
+  compilerStateRef = compilerState;
   const lines = [
     "(() => {",
     indent(RUNTIME_SOURCE.trimEnd()),
@@ -273,49 +1059,1222 @@ export function transpileProgram(program) {
   ];
 
   for (const statement of program.body) {
-    lines.push(...compileStatement(statement, compilerState, 1, "__flowRuntime.context"));
+    lines.push(...compileStatement(statement, compilerState, 1, "__flowRuntime.context", null, null, null, null, null, false));
   }
 
   lines.push("  return { scope: __flowRuntime, output: __flowRuntime.output };", "})()");
   return lines.join("\n");
 }
 
-function compileStatement(statement, compilerState, level, contextName) {
+async function buildModuleGraph(entryPath) {
+  const modules = new Map();
+  const loadingStack = [];
+  let nextModuleIndex = 0;
+
+  async function loadModule(filePath) {
+    const resolvedPath = resolvePath(filePath);
+
+    const cycleStart = loadingStack.indexOf(resolvedPath);
+    if (cycleStart !== -1) {
+      const cycleChain = loadingStack.slice(cycleStart).concat(resolvedPath).join(" -> ");
+      throw new Error(`Circular import detected: ${cycleChain}`);
+    }
+
+    if (modules.has(resolvedPath)) {
+      return modules.get(resolvedPath);
+    }
+
+    loadingStack.push(resolvedPath);
+
+    let source;
+    try {
+      source = await readFile(resolvedPath, "utf8");
+    } catch (error) {
+      if (error && error.code === "ENOENT") {
+        throw new Error(`Module file not found: ${resolvedPath}`);
+      }
+
+      throw error;
+    }
+
+    const program = parse(source);
+    const moduleRecord = {
+      id: `module${nextModuleIndex}`,
+      filePath: resolvedPath,
+      displayName: resolvedPath,
+      program,
+      imports: [],
+      localDeclarations: collectTopLevelDeclarations(program, `module${nextModuleIndex}`),
+      sharedNames: collectSharedNames(program)
+    };
+    nextModuleIndex += 1;
+    modules.set(resolvedPath, moduleRecord);
+
+    for (const statement of program.body) {
+      if (statement.type === "UseNamedStatement") {
+        const dependencyPath = resolveImportPath(statement.sourcePath, resolvedPath);
+        const dependency = await loadModule(dependencyPath);
+        moduleRecord.imports.push({
+          type: "named",
+          sourcePath: statement.sourcePath,
+          resolvedPath: dependencyPath,
+          dependencyId: dependency.id,
+          imports: statement.imports
+        });
+        continue;
+      }
+
+      if (statement.type === "UseModuleAliasStatement") {
+        const dependencyPath = resolveImportPath(statement.sourcePath, resolvedPath);
+        const dependency = await loadModule(dependencyPath);
+        moduleRecord.imports.push({
+          type: "alias",
+          sourcePath: statement.sourcePath,
+          resolvedPath: dependencyPath,
+          dependencyId: dependency.id,
+          aliasNameParts: statement.aliasNameParts
+        });
+      }
+    }
+
+    loadingStack.pop();
+    return moduleRecord;
+  }
+
+  await loadModule(entryPath);
+  const orderedModules = topologicallyOrderModules(modules, entryPath);
+
+  for (const moduleRecord of orderedModules) {
+    finalizeModuleMetadata(moduleRecord, modules);
+  }
+
+  for (const moduleRecord of orderedModules) {
+    moduleRecord.transformedProgram = transformModuleProgram(moduleRecord);
+  }
+
+  return {
+    entryPath,
+    modules,
+    orderedModules
+  };
+}
+
+function resolveImportPath(sourcePath, importerPath) {
+  if (typeof sourcePath !== "string" || sourcePath.length === 0) {
+    throw new Error(`Invalid module path in ${importerPath}`);
+  }
+
+  if (!sourcePath.startsWith("./") && !sourcePath.startsWith("../")) {
+    throw new Error(`Module paths must be relative .flow paths: ${sourcePath}`);
+  }
+
+  if (!sourcePath.endsWith(".flow")) {
+    throw new Error(`Module paths must end with .flow: ${sourcePath}`);
+  }
+
+  return normalizePath(resolvePath(dirname(importerPath), sourcePath));
+}
+
+function topologicallyOrderModules(modules, entryPath) {
+  const ordered = [];
+  const visited = new Set();
+
+  function visit(modulePath) {
+    if (visited.has(modulePath)) {
+      return;
+    }
+
+    visited.add(modulePath);
+    const moduleRecord = modules.get(modulePath);
+
+    for (const importRecord of moduleRecord.imports) {
+      visit(importRecord.resolvedPath);
+    }
+
+    ordered.push(moduleRecord);
+  }
+
+  visit(resolvePath(entryPath));
+  return ordered;
+}
+
+function collectTopLevelDeclarations(program, moduleId) {
+  const declarations = new Map();
+
+  for (const statement of program.body) {
+    const declaration = getTopLevelDeclaration(statement, moduleId);
+    if (!declaration) {
+      continue;
+    }
+
+    const existing = declarations.get(declaration.normalizedName);
+    if (existing && existing.kind !== declaration.kind) {
+      throw new Error(
+        `Top-level name "${declaration.normalizedName}" is declared as both ${existing.kind} and ${declaration.kind}`
+      );
+    }
+
+    if (!existing) {
+      declarations.set(declaration.normalizedName, declaration);
+    }
+  }
+
+  return declarations;
+}
+
+function getTopLevelDeclaration(statement, moduleId) {
   switch (statement.type) {
     case "SetStatement":
+      if (statement.target.type !== "VariableAssignmentTarget") {
+        return null;
+      }
+
+      return createDeclarationDescriptor(moduleId, "value", statement.target.nameParts);
+    case "ReactiveSetStatement":
+      return createDeclarationDescriptor(moduleId, "value", statement.nameParts);
+    case "CollectionDeclarationStatement":
+      return createDeclarationDescriptor(moduleId, "value", statement.nameParts);
+    case "InstanceCreationStatement":
+      return createDeclarationDescriptor(moduleId, "value", statement.nameParts);
+    case "FunctionDeclarationStatement":
+      return createDeclarationDescriptor(moduleId, "function", statement.nameParts);
+    case "TypeDeclarationStatement":
+      return createDeclarationDescriptor(moduleId, "type", statement.nameParts);
+    default:
+      return null;
+  }
+}
+
+function createDeclarationDescriptor(moduleId, kind, nameParts) {
+  const normalizedName = normalizeStaticName(nameParts);
+  return {
+    kind,
+    nameParts,
+    normalizedName,
+    internalNameParts: [createInternalName(moduleId, kind, normalizedName)]
+  };
+}
+
+function createInternalName(moduleId, kind, normalizedName) {
+  return `__${moduleId}__${kind}__${normalizedName.replace(/\s+/g, "_")}`;
+}
+
+function collectSharedNames(program) {
+  const sharedNames = [];
+
+  for (const statement of program.body) {
+    if (statement.type !== "ShareStatement") {
+      continue;
+    }
+
+    for (const nameParts of statement.namePartsList) {
+      sharedNames.push(normalizeStaticName(nameParts));
+    }
+  }
+
+  return sharedNames;
+}
+
+function finalizeModuleMetadata(moduleRecord, modules) {
+  moduleRecord.sharedExports = [];
+
+  for (const sharedName of moduleRecord.sharedNames) {
+    const declaration = moduleRecord.localDeclarations.get(sharedName);
+    if (!declaration) {
+      throw new Error(`Module "${moduleRecord.filePath}" cannot share unknown top-level name "${sharedName}"`);
+    }
+
+    if (!moduleRecord.sharedExports.some((entry) => entry.exportName === sharedName)) {
+      moduleRecord.sharedExports.push({
+        exportName: sharedName,
+        kind: declaration.kind,
+        internalName: normalizeStaticName(declaration.internalNameParts)
+      });
+    }
+  }
+
+  const importedBindings = new Map();
+  const aliasNames = new Set();
+
+  for (const importRecord of moduleRecord.imports) {
+    const dependency = modules.get(importRecord.resolvedPath);
+
+    if (importRecord.type === "named") {
+      for (const nameParts of importRecord.imports) {
+        const importedName = normalizeStaticName(nameParts);
+        const exportedEntry = dependency.sharedExports.find((entry) => entry.exportName === importedName);
+
+        if (!exportedEntry) {
+          throw new Error(
+            `Module "${dependency.filePath}" does not share "${importedName}" required by "${moduleRecord.filePath}"`
+          );
+        }
+
+        if (moduleRecord.localDeclarations.has(importedName)) {
+          throw new Error(
+            `Module "${moduleRecord.filePath}" cannot import "${importedName}" because that name is already declared locally`
+          );
+        }
+
+        if (aliasNames.has(importedName) || importedBindings.has(importedName)) {
+          throw new Error(`Module "${moduleRecord.filePath}" imports "${importedName}" more than once`);
+        }
+
+        importedBindings.set(importedName, exportedEntry.internalName);
+      }
+
+      continue;
+    }
+
+    const aliasName = normalizeStaticName(importRecord.aliasNameParts);
+    if (moduleRecord.localDeclarations.has(aliasName)) {
+      throw new Error(`Module "${moduleRecord.filePath}" cannot use alias "${aliasName}" because that name is already declared locally`);
+    }
+
+    if (importedBindings.has(aliasName) || aliasNames.has(aliasName)) {
+      throw new Error(`Module "${moduleRecord.filePath}" imports alias "${aliasName}" more than once`);
+    }
+
+    aliasNames.add(aliasName);
+  }
+
+  moduleRecord.importedBindings = importedBindings;
+  moduleRecord.aliasNames = aliasNames;
+  moduleRecord.globalNameMap = new Map();
+
+  for (const declaration of moduleRecord.localDeclarations.values()) {
+    moduleRecord.globalNameMap.set(declaration.normalizedName, normalizeStaticName(declaration.internalNameParts));
+  }
+
+  for (const [name, internalName] of importedBindings.entries()) {
+    moduleRecord.globalNameMap.set(name, internalName);
+  }
+}
+
+function transformModuleProgram(moduleRecord) {
+  return {
+    type: "Program",
+    body: transformStatementList(moduleRecord.program.body, moduleRecord, [new Set()], true)
+  };
+}
+
+function transformStatementList(statements, moduleRecord, scopeStack, topLevel = false) {
+  const transformed = [];
+  const currentScope = scopeStack.at(-1);
+
+  for (const statement of statements) {
+    const transformedStatement = transformStatement(statement, moduleRecord, scopeStack, topLevel);
+    if (transformedStatement) {
+      transformed.push(transformedStatement);
+    }
+
+    if (topLevel) {
+      continue;
+    }
+
+    const localNameParts = getLocalStatementBindingNameParts(statement);
+    if (localNameParts) {
+      currentScope.add(normalizeStaticName(localNameParts));
+    }
+  }
+
+  return transformed;
+}
+
+function getLocalStatementBindingNameParts(statement) {
+  switch (statement.type) {
+    case "SetStatement":
+      return statement.target.type === "VariableAssignmentTarget" ? statement.target.nameParts : null;
+    case "CollectionDeclarationStatement":
+    case "InstanceCreationStatement":
+      return statement.nameParts;
+    default:
+      return null;
+  }
+}
+
+function transformStatement(statement, moduleRecord, scopeStack, topLevel) {
+  switch (statement.type) {
+    case "ShareStatement":
+    case "UseNamedStatement":
+      return null;
+    case "UseModuleAliasStatement":
+      return {
+        ...statement,
+        resolvedModuleId: moduleRecord.imports.find(
+          (entry) => entry.type === "alias" && normalizeStaticName(entry.aliasNameParts) === normalizeStaticName(statement.aliasNameParts)
+        )?.dependencyId
+      };
+    case "SetStatement":
+      return transformSetStatement(statement, moduleRecord, scopeStack, topLevel);
+    case "ReactiveSetStatement":
+      return {
+        ...statement,
+        nameParts: transformTopLevelOrReferenceNameParts(statement.nameParts, moduleRecord, scopeStack, topLevel, true),
+        expression: transformExpression(statement.expression, moduleRecord, scopeStack)
+      };
+    case "PrintStatement":
+      return {
+        ...statement,
+        value: transformExpression(statement.value, moduleRecord, scopeStack)
+      };
+    case "FunctionDeclarationStatement":
+      return transformFunctionDeclaration(statement, moduleRecord, scopeStack);
+    case "FunctionCallStatement":
+      return {
+        ...statement,
+        callee: transformExpression(statement.callee, moduleRecord, scopeStack),
+        args: statement.args.map((arg) => transformExpression(arg, moduleRecord, scopeStack))
+      };
+    case "EnsureStatement":
+    case "VerifyStatement":
+    case "ReturnStatement":
+      return {
+        ...statement,
+        condition: statement.condition ? transformExpression(statement.condition, moduleRecord, scopeStack) : undefined,
+        value: statement.value ? transformExpression(statement.value, moduleRecord, scopeStack) : undefined
+      };
+    case "TypeDeclarationStatement":
+      return transformTypeDeclaration(statement, moduleRecord, scopeStack);
+    case "InstanceCreationStatement":
+      return {
+        ...statement,
+        typeNameParts: transformTypeNameParts(statement.typeNameParts, moduleRecord, scopeStack),
+        nameParts: transformTopLevelOrReferenceNameParts(statement.nameParts, moduleRecord, scopeStack, topLevel, true),
+        constructorArgs: statement.constructorArgs.map((arg) => transformExpression(arg, moduleRecord, scopeStack)),
+        initializers: statement.initializers.map((initializer) => ({
+          ...initializer,
+          value: transformExpression(initializer.value, moduleRecord, scopeStack)
+        }))
+      };
+    case "ActionCallStatement":
+      return {
+        ...statement,
+        targetNameParts:
+          statement.targetNameParts === null ? null : transformReferenceNameParts(statement.targetNameParts, moduleRecord, scopeStack),
+        args: statement.args.map((arg) => transformExpression(arg, moduleRecord, scopeStack))
+      };
+    case "CollectionDeclarationStatement":
+      return {
+        ...statement,
+        nameParts: transformTopLevelOrReferenceNameParts(statement.nameParts, moduleRecord, scopeStack, topLevel, true),
+        items: statement.items?.map((item) => transformExpression(item, moduleRecord, scopeStack)) ?? null,
+        source: statement.source ? transformExpression(statement.source, moduleRecord, scopeStack) : null,
+        where: statement.where ? transformExpression(statement.where, moduleRecord, scopeStack, true) : null,
+        select: statement.select ? transformExpression(statement.select, moduleRecord, scopeStack, true) : null
+      };
+    case "CollectionPipelineStatement":
+      return {
+        ...statement,
+        source: transformExpression(statement.source, moduleRecord, scopeStack),
+        steps: statement.steps.map((step) => transformPipelineStep(step, moduleRecord, scopeStack))
+      };
+    case "WhenStatement":
+      return {
+        ...statement,
+        condition: transformExpression(statement.condition, moduleRecord, scopeStack),
+        body: transformStatementList(statement.body, moduleRecord, [...scopeStack, new Set()], false)
+      };
+    case "CheckStatement":
+      return {
+        ...statement,
+        value: transformExpression(statement.value, moduleRecord, scopeStack),
+        cases: statement.cases.map((caseNode) => ({
+          ...caseNode,
+          pattern: transformExpression(caseNode.pattern, moduleRecord, scopeStack),
+          body: transformStatementList(caseNode.body, moduleRecord, [...scopeStack, new Set()], false)
+        })),
+        defaultCase: statement.defaultCase
+          ? {
+              ...statement.defaultCase,
+              body: transformStatementList(statement.defaultCase.body, moduleRecord, [...scopeStack, new Set()], false)
+            }
+          : null
+      };
+    case "ForEachStatement": {
+      const innerScope = new Set([normalizeStaticName(statement.itemNameParts)]);
+      return {
+        ...statement,
+        collection: transformExpression(statement.collection, moduleRecord, scopeStack),
+        body: transformStatementList(statement.body, moduleRecord, [...scopeStack, innerScope], false)
+      };
+    }
+    case "RepeatStatement":
+      return {
+        ...statement,
+        count: transformExpression(statement.count, moduleRecord, scopeStack),
+        body: transformStatementList(statement.body, moduleRecord, [...scopeStack, new Set()], false)
+      };
+    case "WhileStatement":
+      return {
+        ...statement,
+        condition: transformExpression(statement.condition, moduleRecord, scopeStack),
+        body: transformStatementList(statement.body, moduleRecord, [...scopeStack, new Set()], false)
+      };
+    case "BreakStatement":
+    case "ContinueStatement":
+      return statement;
+    default:
+      return statement;
+  }
+}
+
+function transformSetStatement(statement, moduleRecord, scopeStack, topLevel) {
+  const target = transformSetTarget(statement.target, moduleRecord, scopeStack, topLevel);
+  return {
+    ...statement,
+    target,
+    nameParts: target.type === "VariableAssignmentTarget" ? target.nameParts : null,
+    value: transformExpression(statement.value, moduleRecord, scopeStack)
+  };
+}
+
+function transformSetTarget(target, moduleRecord, scopeStack, topLevel) {
+  if (target.type === "VariableAssignmentTarget") {
+    return {
+      ...target,
+      nameParts: transformTopLevelOrReferenceNameParts(target.nameParts, moduleRecord, scopeStack, topLevel, true)
+    };
+  }
+
+  if (target.type === "PropertyAssignmentTarget") {
+    return {
+      ...target,
+      instanceNameParts: transformReferenceNameParts(target.instanceNameParts, moduleRecord, scopeStack)
+    };
+  }
+
+  return target;
+}
+
+function transformFunctionDeclaration(statement, moduleRecord, scopeStack) {
+  const paramScope = new Set(statement.params.map((param) => normalizeStaticName(param)));
+  return {
+    ...statement,
+    nameParts: transformTopLevelOrReferenceNameParts(statement.nameParts, moduleRecord, scopeStack, true, true),
+    returnType: statement.returnType ? transformTypeReference(statement.returnType, moduleRecord, scopeStack) : null,
+    body: transformStatementList(statement.body, moduleRecord, [...scopeStack, paramScope], false)
+  };
+}
+
+function transformTypeDeclaration(statement, moduleRecord, scopeStack) {
+  return {
+    ...statement,
+    nameParts: transformTopLevelOrReferenceNameParts(statement.nameParts, moduleRecord, scopeStack, true, true),
+    parentTypeNameParts: statement.parentTypeNameParts ? transformTypeNameParts(statement.parentTypeNameParts, moduleRecord, scopeStack) : null,
+    properties: statement.properties.map((property) => ({
+      ...property,
+      valueType: transformTypeReference(property.valueType, moduleRecord, scopeStack),
+      defaultValue: property.defaultValue ? transformExpression(property.defaultValue, moduleRecord, scopeStack) : null
+    })),
+    actions: statement.actions.map((action) => {
+      const paramScope = new Set(action.params.map((param) => normalizeStaticName(param)));
+      return {
+        ...action,
+        returnType: action.returnType ? transformTypeReference(action.returnType, moduleRecord, scopeStack) : null,
+        body: transformStatementList(action.body, moduleRecord, [...scopeStack, paramScope], false)
+      };
+    }),
+    createdHook: statement.createdHook
+      ? {
+          ...statement.createdHook,
+          body: transformStatementList(
+            statement.createdHook.body,
+            moduleRecord,
+            [...scopeStack, new Set(statement.createdHook.params.map((param) => normalizeStaticName(param)))],
+            false
+          )
+        }
+      : null,
+    updatedHook: statement.updatedHook
+      ? {
+          ...statement.updatedHook,
+          body: transformStatementList(statement.updatedHook.body, moduleRecord, [...scopeStack, new Set()], false)
+        }
+      : null
+  };
+}
+
+function transformPipelineStep(step, moduleRecord, scopeStack) {
+  switch (step.type) {
+    case "FilterStep":
+      return {
+        ...step,
+        condition: transformExpression(step.condition, moduleRecord, scopeStack, true)
+      };
+    case "TakeFirstStep":
+      return {
+        ...step,
+        count: transformExpression(step.count, moduleRecord, scopeStack)
+      };
+    case "SaveStep":
+      return {
+        ...step,
+        targetNameParts: transformReferenceNameParts(step.targetNameParts, moduleRecord, scopeStack)
+      };
+    default:
+      return step;
+  }
+}
+
+function transformTypeReference(typeReference, moduleRecord, scopeStack) {
+  if (typeReference.kind === "list") {
+    return {
+      ...typeReference,
+      itemType: transformTypeReference(typeReference.itemType, moduleRecord, scopeStack)
+    };
+  }
+
+  return {
+    ...typeReference,
+    nameParts: transformTypeNameParts(typeReference.nameParts, moduleRecord, scopeStack)
+  };
+}
+
+function transformTypeNameParts(nameParts, moduleRecord, scopeStack) {
+  return transformReferenceNameParts(nameParts, moduleRecord, scopeStack);
+}
+
+function transformReferenceNameParts(nameParts, moduleRecord, scopeStack) {
+  const normalizedName = normalizeStaticName(nameParts);
+
+  if (isShadowed(normalizedName, scopeStack)) {
+    return nameParts;
+  }
+
+  const rewrittenName = moduleRecord.globalNameMap.get(normalizedName);
+  return rewrittenName ? [rewrittenName] : nameParts;
+}
+
+function transformTopLevelOrReferenceNameParts(nameParts, moduleRecord, scopeStack, topLevel, isAssignmentTarget = false) {
+  const normalizedName = normalizeStaticName(nameParts);
+
+  if (topLevel) {
+    if (isAssignmentTarget && (moduleRecord.importedBindings.has(normalizedName) || moduleRecord.aliasNames.has(normalizedName))) {
+      throw new Error(`Imported binding "${normalizedName}" is read-only in module "${moduleRecord.filePath}"`);
+    }
+
+    const rewrittenName = moduleRecord.globalNameMap.get(normalizedName);
+    return rewrittenName ? [rewrittenName] : nameParts;
+  }
+
+  return nameParts;
+}
+
+function isShadowed(normalizedName, scopeStack) {
+  for (let index = scopeStack.length - 1; index >= 0; index -= 1) {
+    if (scopeStack[index].has(normalizedName)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function transformExpression(expression, moduleRecord, scopeStack) {
+  switch (expression.type) {
+    case "LiteralExpression":
+      if (expression.valueType !== "string") {
+        return expression;
+      }
+
+      return {
+        ...expression,
+        value: rewriteInterpolatedNames(expression.value, moduleRecord, scopeStack)
+      };
+    case "ReferenceExpression":
+      return {
+        ...expression,
+        nameParts: transformReferenceNameParts(expression.nameParts, moduleRecord, scopeStack)
+      };
+    case "ActionCallExpression":
+      return {
+        ...expression,
+        targetNameParts:
+          expression.targetNameParts === null ? null : transformReferenceNameParts(expression.targetNameParts, moduleRecord, scopeStack),
+        args: expression.args.map((arg) => transformExpression(arg, moduleRecord, scopeStack))
+      };
+    case "FunctionCallExpression":
+      return {
+        ...expression,
+        callee: transformExpression(expression.callee, moduleRecord, scopeStack),
+        args: expression.args.map((arg) => transformExpression(arg, moduleRecord, scopeStack))
+      };
+    case "AnonymousCallableExpression": {
+      const paramScope = new Set(expression.params.map((param) => normalizeStaticName(param)));
+      return {
+        ...expression,
+        returnType: expression.returnType ? transformTypeReference(expression.returnType, moduleRecord, scopeStack) : null,
+        body: transformStatementList(expression.body, moduleRecord, [...scopeStack, paramScope], false)
+      };
+    }
+    case "PropertyAccessExpression":
+      return {
+        ...expression,
+        instanceNameParts: transformReferenceNameParts(expression.instanceNameParts, moduleRecord, scopeStack)
+      };
+    case "RecordLiteralExpression":
+      return {
+        ...expression,
+        fields: expression.fields.map((field) => ({
+          ...field,
+          value: transformExpression(field.value, moduleRecord, scopeStack)
+        }))
+      };
+    case "ListExpression":
+      return {
+        ...expression,
+        items: expression.items.map((item) => transformExpression(item, moduleRecord, scopeStack))
+      };
+    case "CollectionAccessExpression":
+      return {
+        ...expression,
+        collection: transformExpression(expression.collection, moduleRecord, scopeStack),
+        where: expression.where ? transformExpression(expression.where, moduleRecord, scopeStack) : null
+      };
+    case "CollectionTakeExpression":
+      return {
+        ...expression,
+        count: transformExpression(expression.count, moduleRecord, scopeStack),
+        collection: transformExpression(expression.collection, moduleRecord, scopeStack)
+      };
+    case "CollectionIndexExpression":
+      return {
+        ...expression,
+        collection: transformExpression(expression.collection, moduleRecord, scopeStack),
+        index: transformExpression(expression.index, moduleRecord, scopeStack)
+      };
+    case "CollectionIndexOfExpression":
+      return {
+        ...expression,
+        item: transformExpression(expression.item, moduleRecord, scopeStack),
+        collection: transformExpression(expression.collection, moduleRecord, scopeStack)
+      };
+    case "CollectionSliceExpression":
+      return {
+        ...expression,
+        start: transformExpression(expression.start, moduleRecord, scopeStack),
+        end: transformExpression(expression.end, moduleRecord, scopeStack),
+        collection: transformExpression(expression.collection, moduleRecord, scopeStack)
+      };
+    case "CollectionCountExpression":
+      return {
+        ...expression,
+        collection: transformExpression(expression.collection, moduleRecord, scopeStack),
+        where: expression.where ? transformExpression(expression.where, moduleRecord, scopeStack) : null
+      };
+    case "CollectionIsEmptyExpression":
+      return {
+        ...expression,
+        collection: transformExpression(expression.collection, moduleRecord, scopeStack)
+      };
+    case "CollectionContainsExpression":
+      return {
+        ...expression,
+        collection: transformExpression(expression.collection, moduleRecord, scopeStack),
+        item: transformExpression(expression.item, moduleRecord, scopeStack)
+      };
+    case "CollectionHasExpression":
+      return {
+        ...expression,
+        collection: transformExpression(expression.collection, moduleRecord, scopeStack),
+        items: expression.items.map((item) => transformExpression(item, moduleRecord, scopeStack))
+      };
+    case "ResultExpression":
+      return {
+        ...expression,
+        expression: transformExpression(expression.expression, moduleRecord, scopeStack)
+      };
+    case "BinaryExpression":
+    case "LogicalExpression":
+    case "ComparisonExpression":
+    case "StringOperationExpression":
+      return {
+        ...expression,
+        left: transformExpression(expression.left, moduleRecord, scopeStack),
+        right: transformExpression(expression.right, moduleRecord, scopeStack)
+      };
+    case "UnaryExpression":
+      return {
+        ...expression,
+        argument: transformExpression(expression.argument, moduleRecord, scopeStack)
+      };
+    case "BuiltinCallExpression":
+      return {
+        ...expression,
+        args: expression.args.map((arg) => transformExpression(arg, moduleRecord, scopeStack))
+      };
+    default:
+      return expression;
+  }
+}
+
+function rewriteInterpolatedNames(text, moduleRecord, scopeStack) {
+  const source = String(text);
+  let output = "";
+
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] === "(" && source[index + 1] === "(") {
+      output += "((";
+      index += 1;
+      continue;
+    }
+
+    if (source[index] === ")" && source[index + 1] === ")") {
+      output += "))";
+      index += 1;
+      continue;
+    }
+
+    if (source[index] !== "(") {
+      output += source[index];
+      continue;
+    }
+
+    const closeIndex = source.indexOf(")", index + 1);
+    if (closeIndex === -1) {
+      output += source[index];
+      continue;
+    }
+
+    const rawName = source.slice(index + 1, closeIndex);
+    const normalizedName = normalizeStaticName(
+      rawName
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .filter((part) => !["a", "an", "the"].includes(part.toLowerCase()))
+    );
+
+    if (!normalizedName || isShadowed(normalizedName, scopeStack) || moduleRecord.aliasNames.has(normalizedName)) {
+      output += source.slice(index, closeIndex + 1);
+      index = closeIndex;
+      continue;
+    }
+
+    const rewrittenName = moduleRecord.globalNameMap.get(normalizedName);
+    if (!rewrittenName) {
+      output += source.slice(index, closeIndex + 1);
+      index = closeIndex;
+      continue;
+    }
+
+    output += `(${rewrittenName})`;
+    index = closeIndex;
+  }
+
+  return output;
+}
+
+function transpileModuleGraph(moduleGraph) {
+  const compilerState = {
+    tempIndex: 0,
+    knownTypes: new Map(),
+    knownFunctions: new Map(),
+    variableTypes: new Map()
+  };
+  compilerStateRef = compilerState;
+
+  const lines = [
+    "(() => {",
+    indent(RUNTIME_SOURCE.trimEnd()),
+    "  const __flowRuntime = createFlowScriptRuntime();"
+  ];
+
+  for (const moduleRecord of moduleGraph.orderedModules) {
+    lines.push(line(1, `// Module: ${moduleRecord.filePath}`));
+
+    for (const statement of moduleRecord.transformedProgram.body) {
+      lines.push(...compileStatement(statement, compilerState, 1, "__flowRuntime.context", null, null, null, null, null, false));
+    }
+
+    lines.push(
+      line(
+        1,
+        `__flowRuntime.defineModule(${JSON.stringify(moduleRecord.id)}, ${JSON.stringify(moduleRecord.displayName)}, [${moduleRecord.sharedExports
+          .map(
+            (entry) =>
+              `{ exportName: ${JSON.stringify(entry.exportName)}, kind: ${JSON.stringify(entry.kind)}, internalName: ${JSON.stringify(entry.internalName)} }`
+          )
+          .join(", ")}]);`
+      )
+    );
+  }
+
+  lines.push("  return { scope: __flowRuntime, output: __flowRuntime.output };", "})()");
+  return lines.join("\n");
+}
+
+function normalizeStaticName(nameParts) {
+  return nameParts.join(" ");
+}
+
+function accessContextSource(currentTypeName) {
+  if (!currentTypeName) {
+    return "null";
+  }
+
+  return `{ kind: "internal", declaringTypeName: ${JSON.stringify(currentTypeName)} }`;
+}
+
+function isKnownTypeKindOf(compilerState, typeName, ancestorTypeName) {
+  let currentType = compilerState.knownTypes.get(typeName);
+
+  while (currentType) {
+    if (currentType.normalizedName === ancestorTypeName) {
+      return true;
+    }
+
+    currentType = currentType.parentTypeName ? compilerState.knownTypes.get(currentType.parentTypeName) : null;
+  }
+
+  return false;
+}
+
+function canStaticallyAccessMember(compilerState, member, currentTypeName) {
+  if (member.accessLevel === "public") {
+    return true;
+  }
+
+  if (!currentTypeName) {
+    return false;
+  }
+
+  if (member.accessLevel === "private") {
+    return currentTypeName === member.declaredOnTypeName;
+  }
+
+  return isKnownTypeKindOf(compilerState, currentTypeName, member.declaredOnTypeName);
+}
+
+function getKnownType(compilerState, typeName) {
+  return compilerState.knownTypes.get(typeName) ?? null;
+}
+
+function getKnownFunction(compilerState, functionName) {
+  return compilerState.knownFunctions.get(functionName) ?? null;
+}
+
+function registerKnownFunction(compilerState, statement) {
+  const normalizedFunctionName = normalizeStaticName(statement.nameParts);
+
+  compilerState.knownFunctions.set(normalizedFunctionName, {
+    displayName: normalizedFunctionName,
+    normalizedName: normalizedFunctionName,
+    params: statement.params.map((param) => normalizeStaticName(param)),
+    returnType: statement.returnType ?? null
+  });
+}
+
+function assertKnownReturningFunctionAccess(compilerState, functionNameParts) {
+  const definition = getKnownFunction(compilerState, normalizeStaticName(functionNameParts));
+  if (definition && !definition.returnType) {
+    throw new Error(`Function "${definition.displayName}" does not declare a return value`);
+  }
+}
+
+function assertKnownSelfPropertyAccess(compilerState, currentTypeName, propertyNameParts) {
+  if (!currentTypeName) {
+    throw new Error("Self property access requires a declaring type context");
+  }
+
+  const typeDefinition = getKnownType(compilerState, currentTypeName);
+  if (!typeDefinition) {
+    return;
+  }
+
+  const normalizedPropertyName = normalizeStaticName(propertyNameParts);
+  const property = typeDefinition.propertyMap.get(normalizedPropertyName);
+
+  if (!property) {
+    throw new Error('Unknown property "' + normalizedPropertyName + '" on type "' + typeDefinition.displayName + '"');
+  }
+
+  if (!canStaticallyAccessMember(compilerState, property, currentTypeName)) {
+    throw new Error('Cannot access ' + property.accessLevel + ' property "' + property.displayName + '" on type "' + typeDefinition.displayName + '"');
+  }
+}
+
+function assertKnownSelfActionAccess(compilerState, currentTypeName, actionName) {
+  if (!currentTypeName) {
+    throw new Error("Self action calls require a declaring type context");
+  }
+
+  const typeDefinition = getKnownType(compilerState, currentTypeName);
+  if (!typeDefinition) {
+    return;
+  }
+
+  const bucket = typeDefinition.actions.get(actionName);
+  if (!bucket || bucket.length === 0) {
+    throw new Error('Unknown action "' + actionName + '" on type "' + typeDefinition.displayName + '"');
+  }
+
+  const privateExactMatch = [...bucket].reverse().find((candidate) => candidate.declaredOnTypeName === currentTypeName && candidate.accessLevel === "private") ?? null;
+  const action = privateExactMatch ?? [...bucket].reverse().find((candidate) => canStaticallyAccessMember(compilerState, candidate, currentTypeName)) ?? null;
+
+  if (!action) {
+    throw new Error('Cannot call action "' + actionName + '" on type "' + typeDefinition.displayName + '"');
+  }
+}
+
+function assertKnownReturningActionAccess(compilerState, currentTypeName, targetType, targetNameParts, actionName) {
+  if (targetType === "SelfActionTarget") {
+    assertKnownSelfActionAccess(compilerState, currentTypeName, actionName);
+    const typeDefinition = getKnownType(compilerState, currentTypeName);
+    if (!typeDefinition) {
+      return;
+    }
+
+    const bucket = typeDefinition.actions.get(actionName) ?? [];
+    const privateExactMatch = [...bucket].reverse().find((candidate) => candidate.declaredOnTypeName === currentTypeName && candidate.accessLevel === "private") ?? null;
+    const action = privateExactMatch ?? [...bucket].reverse().find((candidate) => canStaticallyAccessMember(compilerState, candidate, currentTypeName)) ?? null;
+    if (action && !action.returnType) {
+      throw new Error(`Action "${actionName}" does not declare a return value`);
+    }
+
+    return;
+  }
+
+  if (targetType === "SuperActionTarget") {
+    assertKnownSuperActionAccess(compilerState, currentTypeName, actionName);
+    const currentType = getKnownType(compilerState, currentTypeName);
+    let ancestorTypeName = currentType?.parentTypeName ?? null;
+
+    while (ancestorTypeName) {
+      const ancestorType = getKnownType(compilerState, ancestorTypeName);
+      if (!ancestorType) {
+        return;
+      }
+
+      const bucket = ancestorType.actions.get(actionName) ?? [];
+      const candidate = [...bucket].reverse().find(
+        (action) => action.declaredOnTypeName === ancestorType.normalizedName && canStaticallyAccessMember(compilerState, action, currentTypeName)
+      );
+
+      if (candidate) {
+        if (!candidate.returnType) {
+          throw new Error(`Action "${actionName}" does not declare a return value`);
+        }
+
+        return;
+      }
+
+      ancestorTypeName = ancestorType.parentTypeName;
+    }
+
+    return;
+  }
+
+  const instanceTypeName = compilerState.variableTypes.get(normalizeStaticName(targetNameParts));
+  if (!instanceTypeName) {
+    return;
+  }
+
+  const typeDefinition = getKnownType(compilerState, instanceTypeName);
+  if (!typeDefinition) {
+    return;
+  }
+
+  const bucket = typeDefinition.actions.get(actionName) ?? [];
+  const action = [...bucket].reverse().find((candidate) => candidate.accessLevel === "public") ?? null;
+  if (action && !action.returnType) {
+    throw new Error(`Action "${actionName}" does not declare a return value`);
+  }
+}
+
+function assertKnownSuperActionAccess(compilerState, currentTypeName, actionName) {
+  if (!currentTypeName) {
+    throw new Error("super action calls require a declaring type context");
+  }
+
+  const currentType = getKnownType(compilerState, currentTypeName);
+  if (!currentType || !currentType.parentTypeName) {
+    throw new Error(`No parent type exists for "${currentTypeName}"`);
+  }
+
+  let ancestorTypeName = currentType.parentTypeName;
+
+  while (ancestorTypeName) {
+    const ancestorType = getKnownType(compilerState, ancestorTypeName);
+    if (!ancestorType) {
+      return;
+    }
+
+    const bucket = ancestorType.actions.get(actionName) ?? [];
+    const candidate = [...bucket].reverse().find(
+      (action) => action.declaredOnTypeName === ancestorType.normalizedName && canStaticallyAccessMember(compilerState, action, currentTypeName)
+    );
+
+    if (candidate) {
+      return;
+    }
+
+    ancestorTypeName = ancestorType.parentTypeName;
+  }
+
+  throw new Error(`No parent action "${actionName}" exists for type "${currentType.displayName}"`);
+}
+
+function registerKnownType(compilerState, statement) {
+  const normalizedTypeName = normalizeStaticName(statement.nameParts);
+  const parentType = statement.parentTypeNameParts ? getKnownType(compilerState, normalizeStaticName(statement.parentTypeNameParts)) : null;
+  const properties = [];
+  const propertyMap = new Map();
+
+  if (parentType) {
+    for (const property of parentType.properties) {
+      properties.push(property);
+      propertyMap.set(property.normalizedName, property);
+    }
+  }
+
+  for (const property of statement.properties) {
+    const normalizedPropertyName = normalizeStaticName(property.nameParts);
+    if (propertyMap.has(normalizedPropertyName)) {
+      throw new Error('Property "' + normalizedPropertyName + '" is already defined on type "' + normalizedTypeName + '"');
+    }
+
+    const resolvedProperty = {
+      displayName: normalizedPropertyName,
+      normalizedName: normalizedPropertyName,
+      accessLevel: property.accessLevel ?? "public",
+      declaredOnTypeName: normalizedTypeName,
+      typeRef: property.valueType
+    };
+    properties.push(resolvedProperty);
+    propertyMap.set(normalizedPropertyName, resolvedProperty);
+  }
+
+  const actions = new Map();
+  if (parentType) {
+    for (const [actionName, bucket] of parentType.actions.entries()) {
+      actions.set(actionName, bucket.slice());
+    }
+  }
+
+  const ownActionNames = new Set();
+  for (const action of statement.actions) {
+    if (ownActionNames.has(action.actionName)) {
+      throw new Error('Action "' + action.actionName + '" is already defined on type "' + normalizedTypeName + '"');
+    }
+
+    ownActionNames.add(action.actionName);
+    const existingBucket = actions.get(action.actionName) ?? [];
+    const overrideTarget = [...existingBucket].reverse().find((candidate) => candidate.accessLevel !== "private");
+    const resolvedAction = {
+      name: action.actionName,
+      accessLevel: action.accessLevel ?? "public",
+      declaredOnTypeName: normalizedTypeName,
+      returnType: action.returnType ?? null
+    };
+
+    if (overrideTarget && ACCESS_LEVEL_RANKS[resolvedAction.accessLevel] < ACCESS_LEVEL_RANKS[overrideTarget.accessLevel]) {
+      throw new Error(
+        'Action "' + action.actionName + '" on type "' + normalizedTypeName + '" cannot narrow visibility from ' + overrideTarget.accessLevel + " to " + resolvedAction.accessLevel
+      );
+    }
+
+    if (overrideTarget && !areTypeReferencesEquivalent(action.returnType ?? null, overrideTarget.returnType ?? null)) {
+      throw new Error('Action "' + action.actionName + '" on type "' + normalizedTypeName + '" must keep the same return type as the parent action');
+    }
+
+    existingBucket.push(resolvedAction);
+    actions.set(action.actionName, existingBucket);
+  }
+
+  compilerState.knownTypes.set(normalizedTypeName, {
+    displayName: normalizedTypeName,
+    normalizedName: normalizedTypeName,
+    parentTypeName: parentType ? parentType.normalizedName : null,
+    properties,
+    propertyMap,
+    actions,
+    createdHook: statement.createdHook,
+    updatedHook: statement.updatedHook,
+    constructorArity: Math.max(parentType?.constructorArity ?? 0, statement.createdHook?.params.length ?? 0)
+  });
+}
+
+function compileStatement(
+  statement,
+  compilerState,
+  level,
+  contextName,
+  selfName = null,
+  currentTypeName = null,
+  currentReturnType = null,
+  currentActionName = null,
+  currentFunctionName = null,
+  localVariableScope = false
+) {
+  switch (statement.type) {
+    case "ShareStatement":
+    case "UseNamedStatement":
+      return [];
+    case "UseModuleAliasStatement":
+      if (!statement.resolvedModuleId) {
+        throw new Error("Module alias imports require a resolved module id");
+      }
       return [
-        line(level, `__flowRuntime.set(${compileName(statement.nameParts)}, __flowRuntime.evaluate((__flowContext) => ${compileExpression(statement.value, "__flowContext")}, ${contextName}));`)
+        line(level, `__flowRuntime.set(${compileName(statement.aliasNameParts)}, __flowRuntime.getModuleNamespace(${JSON.stringify(statement.resolvedModuleId)}));`)
       ];
+    case "SetStatement":
+      return compileSetStatement(statement, compilerState, level, contextName, selfName, currentTypeName, localVariableScope);
     case "ReactiveSetStatement":
       return [
-        line(level, `__flowRuntime.defineReactive(${compileName(statement.nameParts)}, (__flowContext) => ${compileExpression(statement.expression, "__flowContext")}, ${contextName});`)
+        line(level, `__flowRuntime.defineReactive(${compileName(statement.nameParts)}, (__flowContext) => ${compileExpression(statement.expression, "__flowContext", null, selfName, currentTypeName)}, ${contextName});`)
       ];
     case "PrintStatement":
       return [
-        line(level, `__flowRuntime.print(__flowRuntime.evaluate((__flowContext) => ${compileExpression(statement.value, "__flowContext")}, ${contextName}));`)
+        line(level, `__flowRuntime.print(__flowRuntime.evaluate((__flowContext) => ${compileExpression(statement.value, "__flowContext", null, selfName, currentTypeName)}, ${contextName}));`)
       ];
+    case "FunctionDeclarationStatement":
+      return compileFunctionDeclarationStatement(statement, compilerState, level);
+    case "FunctionCallStatement":
+      return compileFunctionCallStatement(statement, compilerState, level, contextName, selfName, currentTypeName);
+    case "EnsureStatement":
+      return compileContractStatement("ensure", statement, compilerState, level, contextName, selfName, currentTypeName, currentFunctionName);
+    case "VerifyStatement":
+      return compileContractStatement("verify", statement, compilerState, level, contextName, selfName, currentTypeName, currentFunctionName);
+    case "ReturnStatement":
+      return compileReturnStatement(statement, compilerState, level, contextName, selfName, currentTypeName, currentReturnType, currentActionName, currentFunctionName);
+    case "TypeDeclarationStatement":
+      return compileTypeDeclarationStatement(statement, compilerState, level);
+    case "InstanceCreationStatement":
+      return compileInstanceCreationStatement(statement, compilerState, level, contextName, selfName, currentTypeName, localVariableScope);
+    case "ActionCallStatement":
+      return compileActionCallStatement(statement, compilerState, level, contextName, selfName, currentTypeName);
     case "CollectionDeclarationStatement":
-      return compileCollectionDeclarationStatement(statement, compilerState, level, contextName);
+      return compileCollectionDeclarationStatement(statement, compilerState, level, contextName, selfName, currentTypeName, localVariableScope);
     case "CollectionPipelineStatement":
-      return compileCollectionPipelineStatement(statement, compilerState, level, contextName);
+      return compileCollectionPipelineStatement(statement, compilerState, level, contextName, selfName, currentTypeName, localVariableScope);
     case "WhenStatement":
-      return compileWhenStatement(statement, compilerState, level, contextName);
+      return compileWhenStatement(statement, compilerState, level, contextName, selfName, currentTypeName, currentReturnType, currentActionName, currentFunctionName, localVariableScope);
     case "CheckStatement":
-      return compileCheckStatement(statement, compilerState, level, contextName);
+      return compileCheckStatement(statement, compilerState, level, contextName, selfName, currentTypeName, currentReturnType, currentActionName, currentFunctionName, localVariableScope);
     case "ForEachStatement":
-      return compileForEachStatement(statement, compilerState, level, contextName);
+      return compileForEachStatement(statement, compilerState, level, contextName, selfName, currentTypeName, currentReturnType, currentActionName, currentFunctionName, localVariableScope);
     case "RepeatStatement":
-      return compileRepeatStatement(statement, compilerState, level, contextName);
+      return compileRepeatStatement(statement, compilerState, level, contextName, selfName, currentTypeName, currentReturnType, currentActionName, currentFunctionName, localVariableScope);
+    case "BreakStatement":
+      return [line(level, "break;")];
+    case "ContinueStatement":
+      return [line(level, "continue;")];
     case "WhileStatement":
-      return compileWhileStatement(statement, compilerState, level, contextName);
+      return compileWhileStatement(statement, compilerState, level, contextName, selfName, currentTypeName, currentReturnType, currentActionName, currentFunctionName, localVariableScope);
     default:
       throw new Error(`Unsupported statement type: ${statement.type}`);
   }
 }
 
-function compileExpression(expression, contextName, recordName = null) {
+function compileExpression(expression, contextName, recordName = null, selfName = null, currentTypeName = null) {
   switch (expression.type) {
     case "LiteralExpression":
+      if (expression.valueType === "no_value") {
+        return "__flowRuntime.noValue";
+      }
+
       if (expression.valueType === "string") {
         return `__flowRuntime.interpolate(${JSON.stringify(expression.value)}, ${contextName})`;
       }
@@ -323,6 +2282,21 @@ function compileExpression(expression, contextName, recordName = null) {
       return JSON.stringify(expression.value);
     case "ReferenceExpression":
       return `${contextName}.get(${compileName(expression.nameParts)})`;
+    case "ActionCallExpression":
+      return compileActionCallExpression(expression, contextName, selfName, currentTypeName);
+    case "FunctionCallExpression":
+      return compileFunctionCallExpression(expression, contextName, selfName, currentTypeName);
+    case "AnonymousCallableExpression":
+      return compileAnonymousCallableExpression(expression, compilerStateRef, contextName, selfName, currentTypeName);
+    case "PropertyAccessExpression":
+      return `__flowRuntime.getProperty(${contextName}.get(${compileName(expression.instanceNameParts)}), ${compileName(expression.propertyNameParts)}, null)`;
+    case "SelfPropertyExpression":
+      if (!selfName) {
+        throw new Error("Self property expressions require an action self context");
+      }
+
+      assertKnownSelfPropertyAccess(compilerStateRef, currentTypeName, expression.propertyNameParts);
+      return `__flowRuntime.getProperty(${selfName}, ${compileName(expression.propertyNameParts)}, ${accessContextSource(currentTypeName)})`;
     case "FieldReferenceExpression":
       if (!recordName) {
         throw new Error(`Field references require a record context: ${expression.fieldName}`);
@@ -330,29 +2304,123 @@ function compileExpression(expression, contextName, recordName = null) {
 
       return `${recordName}[${JSON.stringify(expression.fieldName)}]`;
     case "RecordLiteralExpression":
-      return `{ ${expression.fields.map((field) => `${JSON.stringify(field.name)}: ${compileExpression(field.value, contextName, recordName)}`).join(", ")} }`;
+      return `{ ${expression.fields.map((field) => `${JSON.stringify(field.name)}: ${compileExpression(field.value, contextName, recordName, selfName, currentTypeName)}`).join(", ")} }`;
     case "ListExpression":
-      return `[${expression.items.map((item) => compileExpression(item, contextName, recordName)).join(", ")}]`;
+      return `[${expression.items.map((item) => compileExpression(item, contextName, recordName, selfName, currentTypeName)).join(", ")}]`;
+    case "CollectionAccessExpression":
+      return compileCollectionAccessExpression(expression, contextName, recordName, selfName, currentTypeName);
+    case "CollectionTakeExpression":
+      return expression.side === "first"
+        ? `__flowRuntime.firstItemsOf(${compileExpression(expression.collection, contextName, recordName, selfName, currentTypeName)}, ${compileExpression(expression.count, contextName, recordName, selfName, currentTypeName)})`
+        : `__flowRuntime.lastItemsOf(${compileExpression(expression.collection, contextName, recordName, selfName, currentTypeName)}, ${compileExpression(expression.count, contextName, recordName, selfName, currentTypeName)})`;
+    case "CollectionIndexExpression":
+      return `__flowRuntime.itemAtIndex(${compileExpression(expression.collection, contextName, recordName, selfName, currentTypeName)}, ${compileExpression(expression.index, contextName, recordName, selfName, currentTypeName)})`;
+    case "CollectionIndexOfExpression":
+      return `__flowRuntime.indexOfItem(${compileExpression(expression.collection, contextName, recordName, selfName, currentTypeName)}, ${compileExpression(expression.item, contextName, recordName, selfName, currentTypeName)})`;
+    case "CollectionSliceExpression":
+      return `__flowRuntime.itemsFromIndexToIndex(${compileExpression(expression.collection, contextName, recordName, selfName, currentTypeName)}, ${compileExpression(expression.start, contextName, recordName, selfName, currentTypeName)}, ${compileExpression(expression.end, contextName, recordName, selfName, currentTypeName)})`;
+    case "CollectionCountExpression":
+      return compileCollectionCountExpression(expression, contextName, recordName, selfName, currentTypeName);
+    case "CollectionIsEmptyExpression":
+      return `__flowRuntime.isCollectionEmpty(${compileExpression(expression.collection, contextName, recordName, selfName, currentTypeName)})`;
+    case "CollectionContainsExpression":
+      return `__flowRuntime.collectionContainsItem(${compileExpression(expression.collection, contextName, recordName, selfName, currentTypeName)}, ${compileExpression(expression.item, contextName, recordName, selfName, currentTypeName)})`;
+    case "CollectionHasExpression":
+      return expression.mode === "any"
+        ? `__flowRuntime.collectionHasAnyOf(${compileExpression(expression.collection, contextName, recordName, selfName, currentTypeName)}, [${expression.items.map((item) => compileExpression(item, contextName, recordName, selfName, currentTypeName)).join(", ")}])`
+        : `__flowRuntime.collectionHasAllOf(${compileExpression(expression.collection, contextName, recordName, selfName, currentTypeName)}, [${expression.items.map((item) => compileExpression(item, contextName, recordName, selfName, currentTypeName)).join(", ")}])`;
     case "ResultExpression":
-      return `(${compileExpression(expression.expression, contextName, recordName)})`;
+      return `(${compileExpression(expression.expression, contextName, recordName, selfName, currentTypeName)})`;
     case "BinaryExpression":
-      return `(${compileExpression(expression.left, contextName, recordName)} ${OPERATOR_MAP[expression.operator]} ${compileExpression(expression.right, contextName, recordName)})`;
+      return `(${compileExpression(expression.left, contextName, recordName, selfName, currentTypeName)} ${OPERATOR_MAP[expression.operator]} ${compileExpression(expression.right, contextName, recordName, selfName, currentTypeName)})`;
     case "UnaryExpression":
-      return `(!${compileExpression(expression.argument, contextName, recordName)})`;
+      return `(!${compileExpression(expression.argument, contextName, recordName, selfName, currentTypeName)})`;
     case "LogicalExpression":
-      return `(${compileExpression(expression.left, contextName, recordName)} ${LOGICAL_OPERATOR_MAP[expression.operator]} ${compileExpression(expression.right, contextName, recordName)})`;
+      return `(${compileExpression(expression.left, contextName, recordName, selfName, currentTypeName)} ${LOGICAL_OPERATOR_MAP[expression.operator]} ${compileExpression(expression.right, contextName, recordName, selfName, currentTypeName)})`;
     case "BuiltinCallExpression":
-      return compileBuiltinCallExpression(expression, contextName, recordName);
+      return compileBuiltinCallExpression(expression, contextName, recordName, selfName, currentTypeName);
     case "ComparisonExpression":
-      return `(${compileExpression(expression.left, contextName, recordName)} ${COMPARISON_OPERATOR_MAP[expression.operator]} ${compileExpression(expression.right, contextName, recordName)})`;
+      return `(${compileExpression(expression.left, contextName, recordName, selfName, currentTypeName)} ${COMPARISON_OPERATOR_MAP[expression.operator]} ${compileExpression(expression.right, contextName, recordName, selfName, currentTypeName)})`;
     case "StringOperationExpression":
-      return compileStringOperationExpression(expression, contextName, recordName);
+      return compileStringOperationExpression(expression, contextName, recordName, selfName, currentTypeName);
     default:
       throw new Error(`Unsupported expression type: ${expression.type}`);
   }
 }
 
-function compileWhenStatement(statement, compilerState, level, contextName) {
+function compileSetStatement(statement, compilerState, level, contextName, selfName = null, currentTypeName = null, localVariableScope = false) {
+  const compiledValue = `__flowRuntime.evaluate((__flowContext) => ${compileExpression(statement.value, "__flowContext", null, selfName, currentTypeName)}, ${contextName})`;
+
+  if (statement.target.type === "VariableAssignmentTarget") {
+    if (!localVariableScope) {
+      compilerState.variableTypes.delete(normalizeStaticName(statement.target.nameParts));
+    }
+    return [
+      line(level, `${localVariableScope ? `${contextName}.setLocal` : "__flowRuntime.set"}(${compileName(statement.target.nameParts)}, ${compiledValue});`)
+    ];
+  }
+
+  if (statement.target.type === "PropertyAssignmentTarget") {
+    return [
+      line(level, `__flowRuntime.setProperty(${contextName}.get(${compileName(statement.target.instanceNameParts)}), ${compileName(statement.target.propertyNameParts)}, ${compiledValue}, null);`)
+    ];
+  }
+
+  if (statement.target.type === "SelfPropertyAssignmentTarget") {
+    assertKnownSelfPropertyAccess(compilerState, currentTypeName, statement.target.propertyNameParts);
+    return [
+      line(level, `__flowRuntime.setProperty(${selfName}, ${compileName(statement.target.propertyNameParts)}, ${compiledValue}, ${accessContextSource(currentTypeName)});`)
+    ];
+  }
+
+  throw new Error(`Unsupported assignment target type: ${statement.target.type}`);
+}
+
+function compileReturnStatement(
+  statement,
+  compilerState,
+  level,
+  contextName,
+  selfName = null,
+  currentTypeName = null,
+  currentReturnType = null,
+  currentActionName = null,
+  currentFunctionName = null
+) {
+  if (!currentReturnType) {
+    throw new Error("Return statements require a declared return type");
+  }
+
+  return [
+    line(
+      level,
+      `return __flowRuntime.evaluate((__flowContext) => ${compileExpression(statement.value, "__flowContext", null, selfName, currentTypeName)}, ${contextName});`
+    )
+  ];
+}
+
+function compileContractStatement(kind, statement, compilerState, level, contextName, selfName = null, currentTypeName = null, currentFunctionName = null) {
+  const displayName = currentFunctionName ? JSON.stringify(currentFunctionName) : JSON.stringify("anonymous function");
+  return [
+    line(
+      level,
+      `__flowRuntime.assertContract(${JSON.stringify(kind)}, ${displayName}, ${JSON.stringify(describeExpression(statement.condition))}, __flowRuntime.evaluate((__flowContext) => ${compileExpression(statement.condition, "__flowContext", null, selfName, currentTypeName)}, ${contextName}));`
+    )
+  ];
+}
+
+function compileWhenStatement(
+  statement,
+  compilerState,
+  level,
+  contextName,
+  selfName = null,
+  currentTypeName = null,
+  currentReturnType = null,
+  currentActionName = null,
+  currentFunctionName = null,
+  localVariableScope = false
+) {
   const lines = [];
 
   for (let index = 0; index < statement.branches.length; index += 1) {
@@ -361,31 +2429,31 @@ function compileWhenStatement(statement, compilerState, level, contextName) {
     lines.push(
       line(
         level,
-        `${keyword} (__flowRuntime.evaluate((__flowContext) => ${compileExpression(branch.condition, "__flowContext")}, ${contextName})) {`
+        `${keyword} (__flowRuntime.evaluate((__flowContext) => ${compileExpression(branch.condition, "__flowContext", null, selfName, currentTypeName)}, ${contextName})) {`
       )
     );
-    lines.push(...compileStatements(statement.branches[index].body, compilerState, level + 1, contextName));
+    lines.push(...compileStatements(statement.branches[index].body, compilerState, level + 1, contextName, selfName, currentTypeName, currentReturnType, currentActionName, currentFunctionName, localVariableScope));
     lines.push(line(level, "}"));
   }
 
   if (statement.otherwiseBody) {
     lines.push(line(level, "else {"));
-    lines.push(...compileStatements(statement.otherwiseBody, compilerState, level + 1, contextName));
+    lines.push(...compileStatements(statement.otherwiseBody, compilerState, level + 1, contextName, selfName, currentTypeName, currentReturnType, currentActionName, currentFunctionName, localVariableScope));
     lines.push(line(level, "}"));
   }
 
   return lines;
 }
 
-function compileCollectionDeclarationStatement(statement, compilerState, level, contextName) {
+function compileCollectionDeclarationStatement(statement, compilerState, level, contextName, selfName = null, currentTypeName = null, localVariableScope = false) {
   const collectionFactory = statement.collectionKind === "set" ? "__flowRuntime.createSet" : "__flowRuntime.createList";
 
   if (statement.items !== null) {
-    const compiledItems = statement.items.map((item) => compileExpression(item, "__flowContext")).join(", ");
+    const compiledItems = statement.items.map((item) => compileExpression(item, "__flowContext", null, selfName, currentTypeName)).join(", ");
     return [
       line(
         level,
-        `__flowRuntime.set(${compileName(statement.nameParts)}, __flowRuntime.evaluate((__flowContext) => ${collectionFactory}([${compiledItems}]), ${contextName}));`
+        `${localVariableScope ? `${contextName}.setLocal` : "__flowRuntime.set"}(${compileName(statement.nameParts)}, __flowRuntime.evaluate((__flowContext) => ${collectionFactory}([${compiledItems}]), ${contextName}));`
       )
     ];
   }
@@ -396,7 +2464,7 @@ function compileCollectionDeclarationStatement(statement, compilerState, level, 
   lines.push(
     line(
       level + 1,
-      `let ${tempName} = __flowRuntime.asCollection(__flowRuntime.evaluate((__flowContext) => ${compileExpression(statement.source, "__flowContext")}, ${contextName}));`
+      `let ${tempName} = __flowRuntime.asCollection(__flowRuntime.evaluate((__flowContext) => ${compileExpression(statement.source, "__flowContext", null, selfName, currentTypeName)}, ${contextName}));`
     )
   );
 
@@ -404,7 +2472,7 @@ function compileCollectionDeclarationStatement(statement, compilerState, level, 
     lines.push(
       line(
         level + 1,
-        `${tempName} = __flowRuntime.filterCollection(${tempName}, (__flowRecord) => ${compileExpression(statement.where, contextName, "__flowRecord")});`
+        `${tempName} = __flowRuntime.filterCollection(${tempName}, (__flowRecord) => ${compileExpression(statement.where, contextName, "__flowRecord", selfName, currentTypeName)});`
       )
     );
   }
@@ -413,17 +2481,17 @@ function compileCollectionDeclarationStatement(statement, compilerState, level, 
     lines.push(
       line(
         level + 1,
-        `${tempName} = __flowRuntime.selectCollection(${tempName}, (__flowRecord) => ${compileExpression(statement.select, contextName, "__flowRecord")});`
+        `${tempName} = __flowRuntime.selectCollection(${tempName}, (__flowRecord) => ${compileExpression(statement.select, contextName, "__flowRecord", selfName, currentTypeName)});`
       )
     );
   }
 
-  lines.push(line(level + 1, `__flowRuntime.set(${compileName(statement.nameParts)}, ${collectionFactory}(${tempName}));`));
+  lines.push(line(level + 1, `${localVariableScope ? `${contextName}.setLocal` : "__flowRuntime.set"}(${compileName(statement.nameParts)}, ${collectionFactory}(${tempName}));`));
   lines.push(line(level, "}"));
   return lines;
 }
 
-function compileCollectionPipelineStatement(statement, compilerState, level, contextName) {
+function compileCollectionPipelineStatement(statement, compilerState, level, contextName, selfName = null, currentTypeName = null, localVariableScope = false) {
   const tempName = `__pipeline${compilerState.tempIndex}`;
   compilerState.tempIndex += 1;
   const lines = [line(level, "{")];
@@ -431,7 +2499,7 @@ function compileCollectionPipelineStatement(statement, compilerState, level, con
   lines.push(
     line(
       level + 1,
-      `let ${tempName} = __flowRuntime.asCollection(__flowRuntime.evaluate((__flowContext) => ${compileExpression(statement.source, "__flowContext")}, ${contextName}));`
+      `let ${tempName} = __flowRuntime.asCollection(__flowRuntime.evaluate((__flowContext) => ${compileExpression(statement.source, "__flowContext", null, selfName, currentTypeName)}, ${contextName}));`
     )
   );
 
@@ -441,7 +2509,7 @@ function compileCollectionPipelineStatement(statement, compilerState, level, con
         lines.push(
           line(
             level + 1,
-            `${tempName} = __flowRuntime.filterCollection(${tempName}, (__flowRecord) => ${compileExpression(step.condition, contextName, "__flowRecord")});`
+            `${tempName} = __flowRuntime.filterCollection(${tempName}, (__flowRecord) => ${compileExpression(step.condition, contextName, "__flowRecord", selfName, currentTypeName)});`
           )
         );
         break;
@@ -457,7 +2525,7 @@ function compileCollectionPipelineStatement(statement, compilerState, level, con
         lines.push(
           line(
             level + 1,
-            `${tempName} = __flowRuntime.takeFirstItems(${tempName}, __flowRuntime.evaluate((__flowContext) => ${compileExpression(step.count, "__flowContext")}, ${contextName}));`
+            `${tempName} = __flowRuntime.takeFirstItems(${tempName}, __flowRuntime.evaluate((__flowContext) => ${compileExpression(step.count, "__flowContext", null, selfName, currentTypeName)}, ${contextName}));`
           )
         );
         break;
@@ -465,13 +2533,13 @@ function compileCollectionPipelineStatement(statement, compilerState, level, con
         lines.push(
           line(
             level + 1,
-            `${tempName} = __flowRuntime.selectCollection(${tempName}, (__flowRecord) => ${compileExpression(step.projection, contextName, "__flowRecord")});`
+            `${tempName} = __flowRuntime.selectCollection(${tempName}, (__flowRecord) => ${compileExpression(step.projection, contextName, "__flowRecord", selfName, currentTypeName)});`
           )
         );
         break;
       case "SaveStep": {
         const collectionFactory = step.collectionKind === "set" ? "__flowRuntime.createSet" : "__flowRuntime.createList";
-        lines.push(line(level + 1, `__flowRuntime.set(${compileName(step.targetNameParts)}, ${collectionFactory}(${tempName}));`));
+        lines.push(line(level + 1, `${localVariableScope ? `${contextName}.setLocal` : "__flowRuntime.set"}(${compileName(step.targetNameParts)}, ${collectionFactory}(${tempName}));`));
         break;
       }
       default:
@@ -483,7 +2551,7 @@ function compileCollectionPipelineStatement(statement, compilerState, level, con
   return lines;
 }
 
-function compileCheckStatement(statement, compilerState, level, contextName) {
+function compileCheckStatement(statement, compilerState, level, contextName, selfName = null, currentTypeName = null, currentReturnType = null, currentActionName = null, currentFunctionName = null, localVariableScope = false) {
   const tempName = `__checkValue${compilerState.tempIndex}`;
   compilerState.tempIndex += 1;
 
@@ -491,7 +2559,7 @@ function compileCheckStatement(statement, compilerState, level, contextName) {
   lines.push(
     line(
       level + 1,
-      `const ${tempName} = __flowRuntime.evaluate((__flowContext) => ${compileExpression(statement.target, "__flowContext")}, ${contextName});`
+      `const ${tempName} = __flowRuntime.evaluate((__flowContext) => ${compileExpression(statement.target, "__flowContext", null, selfName, currentTypeName)}, ${contextName});`
     )
   );
 
@@ -501,16 +2569,16 @@ function compileCheckStatement(statement, compilerState, level, contextName) {
     lines.push(
       line(
         level + 1,
-        `${keyword} (${tempName} === __flowRuntime.evaluate((__flowContext) => ${compileExpression(currentCase.match, "__flowContext")}, ${contextName})) {`
+        `${keyword} (${tempName} === __flowRuntime.evaluate((__flowContext) => ${compileExpression(currentCase.match, "__flowContext", null, selfName, currentTypeName)}, ${contextName})) {`
       )
     );
-    lines.push(...compileStatements(currentCase.body, compilerState, level + 2, contextName));
+    lines.push(...compileStatements(currentCase.body, compilerState, level + 2, contextName, selfName, currentTypeName, currentReturnType, currentActionName, currentFunctionName, localVariableScope));
     lines.push(line(level + 1, "}"));
   }
 
   if (statement.defaultBody) {
     lines.push(line(level + 1, "else {"));
-    lines.push(...compileStatements(statement.defaultBody, compilerState, level + 2, contextName));
+    lines.push(...compileStatements(statement.defaultBody, compilerState, level + 2, contextName, selfName, currentTypeName, currentReturnType, currentActionName, currentFunctionName, localVariableScope));
     lines.push(line(level + 1, "}"));
   }
 
@@ -518,7 +2586,7 @@ function compileCheckStatement(statement, compilerState, level, contextName) {
   return lines;
 }
 
-function compileForEachStatement(statement, compilerState, level, contextName) {
+function compileForEachStatement(statement, compilerState, level, contextName, selfName = null, currentTypeName = null, currentReturnType = null, currentActionName = null, currentFunctionName = null, localVariableScope = false) {
   const collectionName = `__loopCollection${compilerState.tempIndex}`;
   const itemValueName = `__loopItem${compilerState.tempIndex}`;
   const loopContextName = `__loopContext${compilerState.tempIndex}`;
@@ -528,23 +2596,18 @@ function compileForEachStatement(statement, compilerState, level, contextName) {
   lines.push(
     line(
       level + 1,
-      `const ${collectionName} = __flowRuntime.asCollection(__flowRuntime.evaluate((__flowContext) => ${compileExpression(statement.collection, "__flowContext")}, ${contextName}));`
+      `const ${collectionName} = __flowRuntime.asCollection(__flowRuntime.evaluate((__flowContext) => ${compileExpression(statement.collection, "__flowContext", null, selfName, currentTypeName)}, ${contextName}));`
     )
   );
   lines.push(line(level + 1, `for (const ${itemValueName} of ${collectionName}) {`));
-  lines.push(
-    line(
-      level + 2,
-      `const ${loopContextName} = __flowRuntime.makeChildContext(${contextName}, { [${compileName(statement.itemNameParts)}]: ${itemValueName} });`
-    )
-  );
-  lines.push(...compileStatements(statement.body, compilerState, level + 2, loopContextName));
+  lines.push(line(level + 2, `const ${loopContextName} = __flowRuntime.makeChildContext(${contextName}, { [${compileName(statement.itemNameParts)}]: ${itemValueName} });`));
+  lines.push(...compileStatements(statement.body, compilerState, level + 2, loopContextName, selfName, currentTypeName, currentReturnType, currentActionName, currentFunctionName, localVariableScope));
   lines.push(line(level + 1, "}"));
   lines.push(line(level, "}"));
   return lines;
 }
 
-function compileRepeatStatement(statement, compilerState, level, contextName) {
+function compileRepeatStatement(statement, compilerState, level, contextName, selfName = null, currentTypeName = null, currentReturnType = null, currentActionName = null, currentFunctionName = null, localVariableScope = false) {
   const countName = `__repeatCount${compilerState.tempIndex}`;
   const indexName = `__repeatIndex${compilerState.tempIndex}`;
   compilerState.tempIndex += 1;
@@ -553,40 +2616,282 @@ function compileRepeatStatement(statement, compilerState, level, contextName) {
   lines.push(
     line(
       level + 1,
-      `const ${countName} = __flowRuntime.repeatCount(__flowRuntime.evaluate((__flowContext) => ${compileExpression(statement.count, "__flowContext")}, ${contextName}));`
+      `const ${countName} = __flowRuntime.repeatCount(__flowRuntime.evaluate((__flowContext) => ${compileExpression(statement.count, "__flowContext", null, selfName, currentTypeName)}, ${contextName}));`
     )
   );
   lines.push(line(level + 1, `for (let ${indexName} = 0; ${indexName} < ${countName}; ${indexName} += 1) {`));
-  lines.push(...compileStatements(statement.body, compilerState, level + 2, contextName));
+  lines.push(...compileStatements(statement.body, compilerState, level + 2, contextName, selfName, currentTypeName, currentReturnType, currentActionName, currentFunctionName, localVariableScope));
   lines.push(line(level + 1, "}"));
   lines.push(line(level, "}"));
   return lines;
 }
 
-function compileWhileStatement(statement, compilerState, level, contextName) {
+function compileWhileStatement(statement, compilerState, level, contextName, selfName = null, currentTypeName = null, currentReturnType = null, currentActionName = null, currentFunctionName = null, localVariableScope = false) {
   const lines = [
     line(
       level,
-      `while (__flowRuntime.evaluate((__flowContext) => ${compileExpression(statement.condition, "__flowContext")}, ${contextName})) {`
+      `while (__flowRuntime.evaluate((__flowContext) => ${compileExpression(statement.condition, "__flowContext", null, selfName, currentTypeName)}, ${contextName})) {`
     )
   ];
-  lines.push(...compileStatements(statement.body, compilerState, level + 1, contextName));
+  lines.push(...compileStatements(statement.body, compilerState, level + 1, contextName, selfName, currentTypeName, currentReturnType, currentActionName, currentFunctionName, localVariableScope));
   lines.push(line(level, "}"));
   return lines;
 }
 
-function compileStatements(statements, compilerState, level, contextName) {
+function compileStatements(
+  statements,
+  compilerState,
+  level,
+  contextName,
+  selfName = null,
+  currentTypeName = null,
+  currentReturnType = null,
+  currentActionName = null,
+  currentFunctionName = null,
+  localVariableScope = false
+) {
   const lines = [];
 
   for (const statement of statements) {
-    lines.push(...compileStatement(statement, compilerState, level, contextName));
+    lines.push(...compileStatement(statement, compilerState, level, contextName, selfName, currentTypeName, currentReturnType, currentActionName, currentFunctionName, localVariableScope));
   }
 
   return lines;
 }
 
-function compileBuiltinCallExpression(expression, contextName, recordName = null) {
-  const compiledArgs = expression.args.map((arg) => compileExpression(arg, contextName, recordName));
+function compileFunctionDeclarationStatement(statement, compilerState, level) {
+  registerKnownFunction(compilerState, statement);
+  const functionTempName = `__functionDefinition${compilerState.tempIndex}`;
+  compilerState.tempIndex += 1;
+
+  return [
+    line(level, "{"),
+    line(level + 1, `const ${functionTempName} = {`),
+    line(level + 2, `params: [${statement.params.map((param) => compileName(param)).join(", ")}],`),
+    line(level + 2, `returnType: ${statement.returnType ? compileTypeReference(statement.returnType) : "null"},`),
+    line(level + 2, `body: (__flowArgs, __flowParentContext) => {`),
+    line(level + 3, "const __functionLocals = Object.create(null);"),
+    ...statement.params.map((param, index) =>
+      line(level + 3, `__functionLocals[__flowRuntime.normalizeName(${compileName(param)})] = __flowArgs[${index}];`)
+    ),
+    line(level + 3, "const __functionContext = __flowRuntime.makeChildContext(__flowParentContext, __functionLocals, __functionLocals);"),
+    ...compileStatements(
+      statement.body,
+      compilerState,
+      level + 3,
+      "__functionContext",
+      null,
+      null,
+      statement.returnType,
+      null,
+      normalizeStaticName(statement.nameParts),
+      true
+    ),
+    line(level + 2, "}"),
+    line(level + 1, "};"),
+    line(level + 1, `__flowRuntime.defineFunction(${compileName(statement.nameParts)}, ${functionTempName});`),
+    line(level, "}")
+  ];
+}
+
+function compileAnonymousCallableExpression(expression, compilerState, contextName, selfName = null, currentTypeName = null) {
+  const callableTempName = `__anonymousCallable${compilerState.tempIndex}`;
+  compilerState.tempIndex += 1;
+  const paramAssignments = expression.params
+    .map((param, index) => `__anonymousLocals[__flowRuntime.normalizeName(${compileName(param)})] = __flowArgs[${index}];`)
+    .join("\n      ");
+  const compiledBody = compileStatements(
+    expression.body,
+    compilerState,
+    3,
+    "__anonymousContext",
+    selfName,
+    currentTypeName,
+    expression.returnType,
+    null,
+    null,
+    true
+  ).join("\n");
+
+  return `(() => {
+  const ${callableTempName} = {
+    params: [${expression.params.map((param) => compileName(param)).join(", ")}],
+    returnType: ${expression.returnType ? compileTypeReference(expression.returnType) : "null"},
+    displayName: "anonymous function",
+    body: (__flowArgs, __flowClosureContext) => {
+      const __anonymousLocals = Object.create(null);
+      ${paramAssignments}
+      const __anonymousContext = __flowRuntime.makeChildContext(__flowClosureContext, __anonymousLocals, __anonymousLocals);
+${compiledBody}
+    }
+  };
+  return __flowRuntime.createAnonymousCallable(${callableTempName}, ${contextName});
+})()`;
+}
+
+function compileTypeDeclarationStatement(statement, compilerState, level) {
+  registerKnownType(compilerState, statement);
+  const typeTempName = `__typeDefinition${compilerState.tempIndex}`;
+  compilerState.tempIndex += 1;
+
+  const propertyEntries = statement.properties.map((property) => `{
+    displayName: ${compileName(property.nameParts)},
+    normalizedName: __flowRuntime.normalizeName(${compileName(property.nameParts)}),
+    accessLevel: ${JSON.stringify(property.accessLevel ?? "public")},
+    typeRef: ${compileTypeReference(property.valueType)},
+    hasDefault: ${property.defaultValue !== null ? "true" : "false"},
+    defaultEvaluator: ${property.defaultValue !== null ? `(__flowContext) => ${compileExpression(property.defaultValue, "__flowContext")}` : "null"}
+  }`);
+
+  const actionEntries = statement.actions.map((action) => `{
+    name: ${JSON.stringify(action.actionName)},
+    accessLevel: ${JSON.stringify(action.accessLevel ?? "public")},
+    returnType: ${action.returnType ? compileTypeReference(action.returnType) : "null"},
+    params: [${action.params.map((param) => compileName(param)).join(", ")}],
+    body: (__flowSelf, __flowArgs) => {
+      const __actionLocals = Object.create(null);
+      ${action.params.map((param, index) => `__actionLocals[__flowRuntime.normalizeName(${compileName(param)})] = __flowArgs[${index}];`).join("\n      ")}
+      const __actionContext = __flowRuntime.makeChildContext(__flowRuntime.context, __actionLocals);
+${compileStatements(action.body, compilerState, 3, "__actionContext", "__flowSelf", normalizeStaticName(statement.nameParts), action.returnType, action.actionName).join("\n")}
+    }
+  }`);
+
+  const createdHookEntry = statement.createdHook
+    ? `{
+    params: [${statement.createdHook.params.map((param) => compileName(param)).join(", ")}],
+    body: (__flowSelf, __flowArgs) => {
+      const __createdLocals = Object.create(null);
+      ${statement.createdHook.params.map((param, index) => `__createdLocals[__flowRuntime.normalizeName(${compileName(param)})] = __flowArgs[${index}];`).join("\n      ")}
+      const __createdContext = __flowRuntime.makeChildContext(__flowRuntime.context, __createdLocals);
+${compileStatements(statement.createdHook.body, compilerState, 3, "__createdContext", "__flowSelf", normalizeStaticName(statement.nameParts)).join("\n")}
+    }
+  }`
+    : "null";
+
+  const updatedHookEntry = statement.updatedHook
+    ? `{
+    body: (__flowSelf) => {
+      const __updatedContext = __flowRuntime.makeChildContext(__flowRuntime.context, Object.create(null));
+${compileStatements(statement.updatedHook.body, compilerState, 3, "__updatedContext", "__flowSelf", normalizeStaticName(statement.nameParts)).join("\n")}
+    }
+  }`
+    : "null";
+
+  return [
+    line(level, "{"),
+    line(level + 1, `const ${typeTempName} = {`),
+    line(level + 2, `displayName: ${compileName(statement.nameParts)},`),
+    line(level + 2, `parentTypeName: ${statement.parentTypeNameParts ? compileName(statement.parentTypeNameParts) : "null"},`),
+    line(level + 2, `properties: [${propertyEntries.join(", ")}],`),
+    line(level + 2, `actions: [${actionEntries.join(", ")}],`),
+    line(level + 2, `createdHook: ${createdHookEntry},`),
+    line(level + 2, `updatedHook: ${updatedHookEntry}`),
+    line(level + 1, "};"),
+    line(level + 1, `__flowRuntime.defineType(${compileName(statement.nameParts)}, ${typeTempName});`),
+    line(level, "}")
+  ];
+}
+
+function compileInstanceCreationStatement(statement, compilerState, level, contextName, selfName = null, currentTypeName = null, localVariableScope = false) {
+  const initTempName = `__instanceInit${compilerState.tempIndex}`;
+  const argsTempName = `__instanceArgs${compilerState.tempIndex}`;
+  compilerState.tempIndex += 1;
+  const lines = [line(level, "{")];
+  lines.push(line(level + 1, `const ${initTempName} = new Map();`));
+  lines.push(
+    line(
+      level + 1,
+      `const ${argsTempName} = [${statement.constructorArgs.map((arg) => `__flowRuntime.evaluate((__flowContext) => ${compileExpression(arg, "__flowContext", null, selfName, currentTypeName)}, ${contextName})`).join(", ")}];`
+    )
+  );
+
+  for (const initializer of statement.initializers) {
+    lines.push(
+      line(
+        level + 1,
+        `${initTempName}.set(__flowRuntime.normalizeName(${compileName(initializer.nameParts)}), __flowRuntime.evaluate((__flowContext) => ${compileExpression(initializer.value, "__flowContext", null, selfName, currentTypeName)}, ${contextName}));`
+      )
+    );
+  }
+
+  if (!localVariableScope) {
+    compilerState.variableTypes.set(normalizeStaticName(statement.nameParts), normalizeStaticName(statement.typeNameParts));
+  }
+  lines.push(
+    line(
+      level + 1,
+      `${localVariableScope ? `${contextName}.setLocal` : "__flowRuntime.set"}(${compileName(statement.nameParts)}, __flowRuntime.createInstance(${compileName(statement.typeNameParts)}, ${argsTempName}, ${initTempName}));`
+    )
+  );
+  lines.push(line(level, "}"));
+  return lines;
+}
+
+function compileActionCallStatement(statement, compilerState, level, contextName, selfName = null, currentTypeName = null) {
+  const compiledArgs = `[${statement.args.map((arg) => `__flowRuntime.evaluate((__flowContext) => ${compileExpression(arg, "__flowContext", null, selfName, currentTypeName)}, ${contextName})`).join(", ")}]`;
+
+  if (statement.targetType === "SelfActionTarget") {
+    assertKnownSelfActionAccess(compilerState, currentTypeName, statement.actionName);
+    return [
+      line(level, `__flowRuntime.callAction(${selfName}, ${JSON.stringify(statement.actionName)}, ${compiledArgs}, ${accessContextSource(currentTypeName)}, false);`)
+    ];
+  }
+
+  if (statement.targetType === "SuperActionTarget") {
+    assertKnownSuperActionAccess(compilerState, currentTypeName, statement.actionName);
+    return [
+      line(
+        level,
+        `__flowRuntime.callSuperAction(${selfName}, ${JSON.stringify(currentTypeName)}, ${JSON.stringify(statement.actionName)}, ${compiledArgs}, ${accessContextSource(currentTypeName)}, false);`
+      )
+    ];
+  }
+
+  return [
+    line(
+      level,
+      `__flowRuntime.callAction(${contextName}.get(${compileName(statement.targetNameParts)}), ${JSON.stringify(statement.actionName)}, ${compiledArgs}, null, false);`
+    )
+  ];
+}
+
+function compileFunctionCallStatement(statement, compilerState, level, contextName, selfName = null, currentTypeName = null) {
+  const compiledArgs = `[${statement.args.map((arg) => `__flowRuntime.evaluate((__flowContext) => ${compileExpression(arg, "__flowContext", null, selfName, currentTypeName)}, ${contextName})`).join(", ")}]`;
+  return [line(level, `__flowRuntime.callFunction(${compileCallableTarget(statement.callee, contextName, selfName, currentTypeName)}, ${compiledArgs}, ${contextName}, false);`)];
+}
+
+function compileActionCallExpression(expression, contextName, selfName = null, currentTypeName = null) {
+  const compiledArgs = `[${expression.args.map((arg) => compileExpression(arg, contextName, null, selfName, currentTypeName)).join(", ")}]`;
+
+  if (expression.targetType === "SelfActionTarget") {
+    assertKnownReturningActionAccess(compilerStateRef, currentTypeName, expression.targetType, null, expression.actionName);
+    return `__flowRuntime.callAction(${selfName}, ${JSON.stringify(expression.actionName)}, ${compiledArgs}, ${accessContextSource(currentTypeName)}, true)`;
+  }
+
+  if (expression.targetType === "SuperActionTarget") {
+    assertKnownReturningActionAccess(compilerStateRef, currentTypeName, expression.targetType, null, expression.actionName);
+    return `__flowRuntime.callSuperAction(${selfName}, ${JSON.stringify(currentTypeName)}, ${JSON.stringify(expression.actionName)}, ${compiledArgs}, ${accessContextSource(currentTypeName)}, true)`;
+  }
+
+  assertKnownReturningActionAccess(compilerStateRef, currentTypeName, expression.targetType, expression.targetNameParts, expression.actionName);
+  return `__flowRuntime.callAction(${contextName}.get(${compileName(expression.targetNameParts)}), ${JSON.stringify(expression.actionName)}, ${compiledArgs}, null, true)`;
+}
+
+function compileFunctionCallExpression(expression, contextName, selfName = null, currentTypeName = null) {
+  const compiledArgs = `[${expression.args.map((arg) => compileExpression(arg, contextName, null, selfName, currentTypeName)).join(", ")}]`;
+  return `__flowRuntime.callFunction(${compileCallableTarget(expression.callee, contextName, selfName, currentTypeName)}, ${compiledArgs}, ${contextName}, true)`;
+}
+
+function compileCallableTarget(target, contextName, selfName = null, currentTypeName = null) {
+  if (target.type === "ReferenceExpression") {
+    return compileName(target.nameParts);
+  }
+
+  return compileExpression(target, contextName, null, selfName, currentTypeName);
+}
+
+function compileBuiltinCallExpression(expression, contextName, recordName = null, selfName = null, currentTypeName = null) {
+  const compiledArgs = expression.args.map((arg) => compileExpression(arg, contextName, recordName, selfName, currentTypeName));
 
   switch (expression.callee) {
     case "round":
@@ -606,9 +2911,9 @@ function compileBuiltinCallExpression(expression, contextName, recordName = null
   }
 }
 
-function compileStringOperationExpression(expression, contextName, recordName = null) {
-  const left = compileExpression(expression.left, contextName, recordName);
-  const right = compileExpression(expression.right, contextName, recordName);
+function compileStringOperationExpression(expression, contextName, recordName = null, selfName = null, currentTypeName = null) {
+  const left = compileExpression(expression.left, contextName, recordName, selfName, currentTypeName);
+  const right = compileExpression(expression.right, contextName, recordName, selfName, currentTypeName);
 
   switch (expression.operator) {
     case "CONTAINS":
@@ -621,6 +2926,150 @@ function compileStringOperationExpression(expression, contextName, recordName = 
       return `(__flowRuntime.formatValue(${left}) + __flowRuntime.formatValue(${right}))`;
     default:
       throw new Error(`Unsupported string operation: ${expression.operator}`);
+  }
+}
+
+function compileCollectionAccessExpression(expression, contextName, recordName = null, selfName = null, currentTypeName = null) {
+  const collection = compileExpression(expression.collection, contextName, recordName, selfName, currentTypeName);
+
+  if (!expression.where) {
+    return expression.accessKind === "first"
+      ? `__flowRuntime.firstItemOf(${collection})`
+      : `__flowRuntime.lastItemOf(${collection})`;
+  }
+
+  const filteredCollection = `__flowRuntime.filterCollection(${collection}, (__flowRecord) => ${compileExpression(expression.where, contextName, "__flowRecord", selfName, currentTypeName)})`;
+  return expression.accessKind === "first"
+    ? `__flowRuntime.firstItemOf(${filteredCollection})`
+    : `__flowRuntime.lastItemOf(${filteredCollection})`;
+}
+
+function compileCollectionCountExpression(expression, contextName, recordName = null, selfName = null, currentTypeName = null) {
+  const collection = compileExpression(expression.collection, contextName, recordName, selfName, currentTypeName);
+
+  if (!expression.where) {
+    return `__flowRuntime.countOf(${collection})`;
+  }
+
+  return `__flowRuntime.countOf(__flowRuntime.filterCollection(${collection}, (__flowRecord) => ${compileExpression(expression.where, contextName, "__flowRecord", selfName, currentTypeName)}))`;
+}
+
+function compileTypeReference(typeReference) {
+  if (typeReference.kind === "list") {
+    return `{ kind: "list", itemType: ${compileTypeReference(typeReference.itemType)} }`;
+  }
+
+  return `{ kind: "named", name: ${compileName(typeReference.nameParts)}, displayName: ${compileName(typeReference.nameParts)} }`;
+}
+
+function describeExpression(expression) {
+  switch (expression.type) {
+    case "LiteralExpression":
+      if (expression.valueType === "string") {
+        return expression.value;
+      }
+
+      if (expression.valueType === "boolean") {
+        return expression.value ? "yes" : "no";
+      }
+
+      if (expression.valueType === "no_value") {
+        return "no value";
+      }
+
+      return String(expression.value);
+    case "ReferenceExpression":
+      return normalizeStaticName(expression.nameParts);
+    case "SelfPropertyExpression":
+      return `its ${normalizeStaticName(expression.propertyNameParts)}`;
+    case "PropertyAccessExpression":
+      return `${normalizeStaticName(expression.propertyNameParts)} of ${normalizeStaticName(expression.instanceNameParts)}`;
+    case "FunctionCallExpression":
+      return `${describeExpression(expression.callee)}${expression.args.length > 0 ? ` using ${expression.args.map(describeExpression).join(" and ")}` : ""}`;
+    case "AnonymousCallableExpression":
+      return expression.isReturning ? "the result of this" : "do this";
+    case "ActionCallExpression":
+      if (expression.targetType === "SelfActionTarget") {
+        return `asking itself to "${expression.actionName}"`;
+      }
+
+      if (expression.targetType === "SuperActionTarget") {
+        return `asking super to "${expression.actionName}"`;
+      }
+
+      return `asking ${normalizeStaticName(expression.targetNameParts)} to "${expression.actionName}"`;
+    case "BuiltinCallExpression":
+      return `${expression.callee}(${expression.args.map(describeExpression).join(", ")})`;
+    case "ResultExpression":
+      return `the result of (${describeExpression(expression.expression)})`;
+    case "UnaryExpression":
+      if (expression.operator === TOKEN_KINDS.NOT) {
+        return `not ${describeExpression(expression.argument)}`;
+      }
+
+      return `${expression.operator.toLowerCase()} ${describeExpression(expression.argument)}`;
+    case "LogicalExpression":
+      return `${describeExpression(expression.left)} ${expression.operator === TOKEN_KINDS.AND ? "and" : "or"} ${describeExpression(expression.right)}`;
+    case "ComparisonExpression":
+      return `${describeExpression(expression.left)} ${describeComparisonOperator(expression.operator)} ${describeExpression(expression.right)}`;
+    case "StringOperationExpression":
+      return `${describeExpression(expression.left)} ${describeStringOperator(expression.operator)} ${describeExpression(expression.right)}`;
+    case "CollectionIsEmptyExpression":
+      return `${describeExpression(expression.collection)} is empty`;
+    case "CollectionContainsExpression":
+      return `${describeExpression(expression.collection)} contains item ${describeExpression(expression.item)}`;
+    case "CollectionHasExpression":
+      return `${describeExpression(expression.collection)} has ${expression.mode} of (${expression.items.map(describeExpression).join(", ")})`;
+    case "CollectionCountExpression":
+      return expression.where ? `count of ${describeExpression(expression.collection)} where ${describeExpression(expression.where)}` : `count of ${describeExpression(expression.collection)}`;
+    case "CollectionAccessExpression":
+      return expression.where
+        ? `${expression.accessKind} item of ${describeExpression(expression.collection)} where ${describeExpression(expression.where)}`
+        : `${expression.accessKind} item of ${describeExpression(expression.collection)}`;
+    case "CollectionTakeExpression":
+      return `${expression.side} ${describeExpression(expression.count)} items of ${describeExpression(expression.collection)}`;
+    case "CollectionIndexExpression":
+      return `item at index ${describeExpression(expression.index)} of ${describeExpression(expression.collection)}`;
+    case "CollectionIndexOfExpression":
+      return `index of ${describeExpression(expression.item)} in ${describeExpression(expression.collection)}`;
+    case "CollectionSliceExpression":
+      return `items from index ${describeExpression(expression.start)} to ${describeExpression(expression.end)} of ${describeExpression(expression.collection)}`;
+    default:
+      return expression.type;
+  }
+}
+
+function describeComparisonOperator(operator) {
+  switch (operator) {
+    case "EQUAL":
+      return "is equal to";
+    case "NOT_EQUAL":
+      return "is not equal to";
+    case "GREATER_THAN":
+      return "is greater than";
+    case "LESS_THAN":
+      return "is less than";
+    case "GREATER_THAN_OR_EQUAL":
+      return "is greater than or equal to";
+    case "LESS_THAN_OR_EQUAL":
+      return "is less than or equal to";
+    default:
+      return operator;
+  }
+}
+
+function describeStringOperator(operator) {
+  switch (operator) {
+    case "CONTAINS":
+      return "contains";
+    case "STARTS_WITH":
+      return "starts with";
+    case "ENDS_WITH":
+      return "ends with";
+    case "JOINED_WITH":
+      return "joined with";
+    default:
+      return operator;
   }
 }
 

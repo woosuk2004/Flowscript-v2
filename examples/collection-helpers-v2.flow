@@ -1,0 +1,24 @@
+Create a List called users defined as:
+    - "Alice"
+    - "Bob"
+    - "Charlie"
+    - "Dana"
+
+Create a Set called tags defined as:
+    - "vip"
+    - "trial"
+    - "active"
+
+Set first users to first 3 items of users
+Set last users to last 2 items of users
+Set alice index to index of "Alice" in users
+Set missing index to index of "Missing" in users
+Set users has any match to users has any of ("Guest", "Alice")
+Set tags has all match to tags has all of ("vip", "active")
+
+Print first users.
+Print last users.
+Print alice index.
+Print missing index.
+Print users has any match.
+Print tags has all match.

@@ -132,6 +132,9 @@ test("lexer tokenizes fixed formatting calls and leading soft words", () => {
   const source = [
     "So Set total label to fixed(total, 2)",
     "THEN Print total label.",
+    "Also Print total label.",
+    "THEREFORE Print total label.",
+    "Meanwhile Print total label.",
     "THAT'S why Print \"Use (( and ))\"."
   ].join("\n");
 
@@ -150,6 +153,24 @@ test("lexer tokenizes fixed formatting calls and leading soft words", () => {
     TOKEN_KINDS.COMMA,
     TOKEN_KINDS.NUMBER,
     TOKEN_KINDS.RPAREN,
+    TOKEN_KINDS.NEWLINE,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.PRINT,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.DOT,
+    TOKEN_KINDS.NEWLINE,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.PRINT,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.DOT,
+    TOKEN_KINDS.NEWLINE,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.PRINT,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.DOT,
     TOKEN_KINDS.NEWLINE,
     TOKEN_KINDS.WORD,
     TOKEN_KINDS.PRINT,
@@ -226,6 +247,42 @@ test("lexer tokenizes comparison phrases", () => {
   ]);
 });
 
+test("lexer tokenizes break and continue loop statements", () => {
+  const source = [
+    "Repeat 3 times:",
+    "    Break.",
+    "For each item in numbers:",
+    "    Continue"
+  ].join("\n");
+
+  const tokens = lex(source);
+  const kinds = tokens.map((token) => token.kind);
+
+  assert.deepEqual(kinds, [
+    TOKEN_KINDS.REPEAT,
+    TOKEN_KINDS.NUMBER,
+    TOKEN_KINDS.TIMES,
+    TOKEN_KINDS.COLON,
+    TOKEN_KINDS.NEWLINE,
+    TOKEN_KINDS.INDENT,
+    TOKEN_KINDS.BREAK,
+    TOKEN_KINDS.DOT,
+    TOKEN_KINDS.NEWLINE,
+    TOKEN_KINDS.DEDENT,
+    TOKEN_KINDS.FOR,
+    TOKEN_KINDS.EACH,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.IN,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.COLON,
+    TOKEN_KINDS.NEWLINE,
+    TOKEN_KINDS.INDENT,
+    TOKEN_KINDS.CONTINUE,
+    TOKEN_KINDS.DEDENT,
+    TOKEN_KINDS.EOF
+  ]);
+});
+
 test("lexer tokenizes logical and string operators", () => {
   const source = [
     "Set title status to title contains \"Flow\" and not title ends with \"Draft\"",
@@ -274,6 +331,167 @@ test("lexer tokenizes logical and string operators", () => {
     TOKEN_KINDS.ENDS,
     TOKEN_KINDS.WITH,
     TOKEN_KINDS.STRING,
+    TOKEN_KINDS.EOF
+  ]);
+});
+
+test("lexer tokenizes collection helper phrases and the no value sentinel", () => {
+  const source = [
+    "Set first user to first item of users",
+    "Set picked user to item at index 2 of users",
+    "Set user slice to items from index 1 to 5 of users",
+    "Set total users to count of users",
+    "Set has alice to users contains item \"Alice\"",
+    "When item at index 0 of users is no value:",
+    "    Print \"Missing\"."
+  ].join("\n");
+
+  const tokens = lex(source);
+  const kinds = tokens.map((token) => token.kind);
+
+  assert.deepEqual(kinds, [
+    TOKEN_KINDS.SET,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.TO,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.NEWLINE,
+    TOKEN_KINDS.SET,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.TO,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.NUMBER,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.NEWLINE,
+    TOKEN_KINDS.SET,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.TO,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.NUMBER,
+    TOKEN_KINDS.TO,
+    TOKEN_KINDS.NUMBER,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.NEWLINE,
+    TOKEN_KINDS.SET,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.TO,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.NEWLINE,
+    TOKEN_KINDS.SET,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.TO,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.CONTAINS,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.STRING,
+    TOKEN_KINDS.NEWLINE,
+    TOKEN_KINDS.WHEN,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.NUMBER,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.IS,
+    TOKEN_KINDS.BOOLEAN,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.COLON,
+    TOKEN_KINDS.NEWLINE,
+    TOKEN_KINDS.INDENT,
+    TOKEN_KINDS.PRINT,
+    TOKEN_KINDS.STRING,
+    TOKEN_KINDS.DOT,
+    TOKEN_KINDS.DEDENT,
+    TOKEN_KINDS.EOF
+  ]);
+});
+
+test("lexer tokenizes extended collection helper phrases", () => {
+  const source = [
+    "Set first users to first 3 items of users",
+    "Set last users to last 2 items of users",
+    'Set alice index to index of "Alice" in users',
+    'Set has any match to users has any of ("Alice", "Bob")',
+    'Set has all match to users has all of ("Alice", "Bob")'
+  ].join("\n");
+
+  const kinds = lex(source).map((token) => token.kind);
+
+  assert.deepEqual(kinds, [
+    TOKEN_KINDS.SET,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.TO,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.NUMBER,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.NEWLINE,
+    TOKEN_KINDS.SET,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.TO,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.NUMBER,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.NEWLINE,
+    TOKEN_KINDS.SET,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.TO,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.STRING,
+    TOKEN_KINDS.IN,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.NEWLINE,
+    TOKEN_KINDS.SET,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.TO,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.LPAREN,
+    TOKEN_KINDS.STRING,
+    TOKEN_KINDS.COMMA,
+    TOKEN_KINDS.STRING,
+    TOKEN_KINDS.RPAREN,
+    TOKEN_KINDS.NEWLINE,
+    TOKEN_KINDS.SET,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.TO,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.WORD,
+    TOKEN_KINDS.LPAREN,
+    TOKEN_KINDS.STRING,
+    TOKEN_KINDS.COMMA,
+    TOKEN_KINDS.STRING,
+    TOKEN_KINDS.RPAREN,
     TOKEN_KINDS.EOF
   ]);
 });

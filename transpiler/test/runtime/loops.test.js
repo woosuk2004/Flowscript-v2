@@ -65,3 +65,29 @@ test("runtime lowers until loops to while not behavior", () => {
   assert.equal(result.scope.get("counter"), 3);
   assert.deepEqual(result.output, ["0", "1", "2"]);
 });
+
+test("runtime breaks out of counted loops early", () => {
+  const result = execute([
+    "Set counter to 0",
+    "Repeat 5 times:",
+    "    Print counter.",
+    "    Set counter to the result of (counter + 1)",
+    "    When counter is greater than or equal to 2:",
+    "        Break."
+  ].join("\n"));
+
+  assert.equal(result.scope.get("counter"), 2);
+  assert.deepEqual(result.output, ["0", "1"]);
+});
+
+test("runtime continues to the next loop iteration", () => {
+  const result = execute([
+    "Set numbers to the list of (1, 2, 3, 4)",
+    "For each item in numbers:",
+    "    When item is equal to 2:",
+    "        Continue.",
+    "    Print item."
+  ].join("\n"));
+
+  assert.deepEqual(result.output, ["1", "3", "4"]);
+});

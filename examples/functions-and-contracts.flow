@@ -1,0 +1,14 @@
+How to calculate discount using price and tax and returns Number:
+    Ensure price is greater than or equal to 0.
+    Ensure tax is greater than or equal to 0.
+    Set total to the result of round(price * (1 + tax), 2)
+    Verify total is greater than or equal to 0.
+    Return total.
+
+How to show welcome using name:
+    Set message to "Hello, " joined with name
+    Print message.
+
+Set discount to the result of calculate discount using 100 and 0.1
+Print discount.
+show welcome using "FlowScript".

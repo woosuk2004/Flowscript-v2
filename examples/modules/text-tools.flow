@@ -1,0 +1,9 @@
+Set tool label to "Text tools"
+
+Set formatter to the result of this using name and returns Text:
+    Return "Hello, " joined with name.
+
+How to parse user using name and returns Text:
+    Return name.
+
+Share tool label and formatter and parse user.

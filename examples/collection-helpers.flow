@@ -1,0 +1,27 @@
+Create a List called users defined as:
+    - "Alice"
+    - "Bob"
+    - "Charlie"
+
+Create a Set called tags defined as:
+    - "vip"
+    - "trial"
+    - "vip"
+
+Set first user to first item of users
+Set picked user to item at index 1 of users
+Set user slice to items from index 1 to 5 of users
+Set last tag to last item of tags
+Set total users to count of users
+Set users empty to users is empty
+Set has alice to users contains item "Alice"
+Set missing user to item at index 99 of users
+
+Print first user.
+Print picked user.
+Print user slice.
+Print last tag.
+Print total users.
+Print users empty.
+Print has alice.
+Print missing user.

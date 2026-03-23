@@ -1,0 +1,7 @@
+Use formatter and parse user from "./text-tools.flow".
+Use User from "./user-model.flow".
+
+Create a User called sample user using "Alice".
+Print the result of parse user using "Bob".
+Print the result of formatter using "Cara".
+Print the Name of sample user.

@@ -22,7 +22,11 @@ node transpiler/src/cli.js run examples/list-loops.flow
 node transpiler/src/cli.js run examples/repeat-while-until.flow
 node transpiler/src/cli.js run examples/collections.flow
 node transpiler/src/cli.js run examples/collection-pipeline.flow
+node transpiler/src/cli.js run examples/modules/named-import.flow
+node transpiler/src/cli.js run examples/modules/alias-import.flow
 ```
+
+`run` follows module imports automatically.
 
 ## Inspect tokens
 
@@ -40,4 +44,15 @@ node transpiler/src/cli.js parse examples/collections.flow
 
 ```bash
 node transpiler/src/cli.js transpile examples/collections.flow
+node transpiler/src/cli.js transpile examples/modules/named-import.flow
 ```
+
+`transpile` follows module imports automatically and emits one combined JavaScript program for the entry file and its dependencies.
+
+## Parse one file
+
+```bash
+node transpiler/src/cli.js parse examples/modules/named-import.flow
+```
+
+`parse` stays single-file in this version. It shows the AST for the file you point at, without expanding imports.

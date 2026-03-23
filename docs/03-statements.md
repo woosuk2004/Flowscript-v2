@@ -4,6 +4,8 @@
 
 Use `Set` to assign a value once.
 
+`Set` can also update object properties with forms such as `Set the Email of admin user to "x@example.com".` or, inside actions, `Set its Email to new email.`
+
 ```flow
 Set user age to 20
 Set greeting to "Hello World"
@@ -15,6 +17,9 @@ The assigned value is evaluated once at assignment time.
 
 ## Print
 
+Instances print in a predictable debug-style form, for example `User{Name: Alice, Email: alice@example.com}`.
+
+
 Use `Print` to emit output.
 
 ```flow
@@ -24,6 +29,107 @@ Print "Age is (user age)".
 ```
 
 The trailing `.` is optional.
+
+## Define a Type
+
+Use `Define a Type called ...:` to declare object types with typed properties and actions.
+
+```flow
+Define a Type called User:
+    It has Name (Text).
+    It has Email (Text).
+    When created using name, email:
+        Set its Name to name.
+        Set its Email to email.
+    When updated:
+        Print "Updated".
+    It can "Update Email" using new email:
+        Set its Email to new email.
+```
+
+Inheritance uses `which is a kind of` or `which is a`.
+
+## Create an Instance
+
+Use `Create a <Type> called ...` to create an object instance.
+
+```flow
+Create a User called admin user:
+    Name is "Alice"
+    Email is "alice@example.com"
+```
+
+Constructor arguments are also supported.
+
+```flow
+Create a User called admin user using "Alice", "alice@example.com".
+```
+
+## Ask
+
+Use `Ask <Instance> to "Action Name" ...` to call an action on an object instance.
+
+```flow
+Ask admin user to "Update Email" using "owner@example.com".
+```
+
+`Ask ...` is the statement form. If an action returns a value and you want to use it in an expression, use `the result of asking ...`.
+
+## Return
+
+Use `Return ...` inside an action that declares `and returns <Type>`.
+
+```flow
+It can "Get Display Name" and returns Text:
+    Return its Name.
+```
+
+`Return` is only valid inside returning actions. Lifecycle hooks do not return values.
+
+## How to
+
+Use `How to ...` to declare a top-level function.
+
+```flow
+How to calculate discount using price and tax and returns Number:
+    Return the result of round(price * (1 + tax), 2).
+```
+
+Functions use phrase-style names, may declare parameters with `using`, and may optionally declare `and returns <Type>`.
+
+## Share
+
+Use `Share ...` to expose selected top-level names from a module.
+
+```flow
+Share formatter and parse user.
+Share User.
+```
+
+## Use
+
+Use `Use ... from ...` for named imports, or `Use "./file.flow" as ...` for module aliases.
+
+```flow
+Use formatter and parse user from "./text-tools.flow".
+Use "./text-tools.flow" as text tools.
+```
+
+## Ensure
+
+Use `Ensure ...` at the top of a function body to reject invalid input before the function continues.
+
+```flow
+Ensure price is greater than or equal to 0.
+```
+
+## Verify
+
+Use `Verify ...` near the end of a function body to validate the final state or result before the function finishes.
+
+```flow
+Verify total is greater than or equal to 0.
+```
 
 ## Create a List
 
@@ -50,6 +156,32 @@ Create a Set called tags defined as:
 ```
 
 Sets keep the first-seen insertion order.
+
+## Collection Helpers
+
+Use natural collection helper phrases anywhere a value expression is valid.
+
+```flow
+Set first user to first item of users
+Set first users to first 3 items of users
+Set last users to last 2 items of users
+Set picked user to item at index 2 of users
+Set alice index to index of "Alice" in users
+Set user slice to items from index 1 to 5 of users
+Set total users to count of users
+Set first adult to first item of users where Age >= 20
+Set adult count to count of users where Age >= 20
+Set users empty to users is empty
+Set has alice to users contains item "Alice"
+Set has any match to users has any of ("Alice", "Bob")
+Set has all match to users has all of ("Alice", "Bob")
+When item at index 0 of users is no value:
+    Print "Missing".
+```
+
+Indexes are zero-based. Range ends are inclusive. Missing single-item access returns `no value`.
+`first item of ... where ...` returns the first matching item or `no value`.
+`count of ... where ...` returns how many items match the condition.
 
 ## Take ... Then ...
 
@@ -111,6 +243,31 @@ Repeat 3 times:
     Print "Again".
 ```
 
+## Break
+
+Use `Break` to stop the current loop immediately.
+
+```flow
+Repeat 10 times:
+    Print "Tick".
+    Break.
+```
+
+`Break` is only valid inside `For each`, `Repeat`, and `Keep doing this` loops.
+
+## Continue
+
+Use `Continue` to skip the rest of the current loop iteration and move to the next one.
+
+```flow
+For each item in numbers:
+    When item is equal to 2:
+        Continue.
+    Print item.
+```
+
+`Continue` is only valid inside `For each`, `Repeat`, and `Keep doing this` loops.
+
 ## Keep doing this while
 
 Use `Keep doing this while [Condition]:` for a pre-checked loop.
@@ -133,14 +290,20 @@ Keep doing this until counter is greater than or equal to 3:
     Set counter to the result of (counter + 1)
 ```
 
-## Leading Readability Words
+## Ignored Words
 
-FlowScript can ignore a small set of readability words when they appear at the start of a statement.
+FlowScript ignores a small set of readability words and article words to make statements read more naturally.
 
 ```flow
 So Set total to 20
 Then Print total.
+Also Print total.
+Therefore Print total.
+Meanwhile Print total.
 That's why Print "Total is (total)".
+Set the user age to 20
+Print a user age.
 ```
 
-These words are readability-only and do not affect execution.
+Readability phrases such as `so`, `then`, `also`, `therefore`, `meanwhile`, and `that's why` are only ignored at the start of a statement.
+Articles such as `a`, `an`, and `the` are ignored inside grammar phrases and names.

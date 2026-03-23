@@ -37,6 +37,12 @@ class FlowScriptParser {
   constructor(tokens) {
     this.tokens = tokens;
     this.index = 0;
+    this.loopDepth = 0;
+    this.actionDepth = 0;
+    this.functionDepth = 0;
+    this.returnAllowanceStack = [];
+    this.blockContextStack = [];
+    this.expressionBoundaryStack = [];
   }
 
   parseProgram() {
@@ -66,8 +72,40 @@ class FlowScriptParser {
       return this.parsePrintStatement();
     }
 
+    if (this.match(TOKEN_KINDS.HOW)) {
+      return this.parseFunctionDeclarationStatement();
+    }
+
+    if (this.match(TOKEN_KINDS.SHARE)) {
+      return this.parseShareStatement();
+    }
+
+    if (this.match(TOKEN_KINDS.USE)) {
+      return this.parseUseStatement();
+    }
+
+    if (this.match(TOKEN_KINDS.ENSURE)) {
+      return this.parseEnsureStatement();
+    }
+
+    if (this.match(TOKEN_KINDS.VERIFY)) {
+      return this.parseVerifyStatement();
+    }
+
+    if (this.match(TOKEN_KINDS.RETURN)) {
+      return this.parseReturnStatement();
+    }
+
     if (this.match(TOKEN_KINDS.CREATE)) {
-      return this.parseCollectionDeclarationStatement();
+      return this.parseCreateStatement();
+    }
+
+    if (this.match(TOKEN_KINDS.DEFINE)) {
+      return this.parseTypeDeclarationStatement();
+    }
+
+    if (this.match(TOKEN_KINDS.ASK)) {
+      return this.parseActionCallStatement();
     }
 
     if (this.match(TOKEN_KINDS.TAKE)) {
@@ -90,8 +128,20 @@ class FlowScriptParser {
       return this.parseRepeatStatement();
     }
 
+    if (this.match(TOKEN_KINDS.BREAK)) {
+      return this.parseBreakStatement();
+    }
+
+    if (this.match(TOKEN_KINDS.CONTINUE)) {
+      return this.parseContinueStatement();
+    }
+
     if (this.match(TOKEN_KINDS.KEEP)) {
       return this.parseWhileStatement();
+    }
+
+    if (this.peek().kind === TOKEN_KINDS.WORD || this.checkFunctionCallStatementStart()) {
+      return this.parseFunctionCallStatement();
     }
 
     throw this.error(this.peek(), `Unsupported statement starting with ${this.peek().lexeme || this.peek().kind}`);
@@ -99,15 +149,19 @@ class FlowScriptParser {
 
   parseSetStatement() {
     this.consume(TOKEN_KINDS.SET, "Expected 'Set' to start an assignment statement");
-    const nameParts = this.parseNameUntil(new Set([TOKEN_KINDS.TO, TOKEN_KINDS.ALWAYS]));
+    const target = this.parseSetTarget();
 
     if (this.match(TOKEN_KINDS.ALWAYS)) {
+      if (target.type !== "VariableAssignmentTarget") {
+        throw this.error(this.peek(), "Reactive assignments only support variable names in this version of FlowScript");
+      }
+
       this.advance();
       this.consume(TOKEN_KINDS.IS, "Expected 'is' after 'always'");
       const expression = this.parseResultExpression();
       return {
         type: "ReactiveSetStatement",
-        nameParts,
+        nameParts: target.nameParts,
         expression
       };
     }
@@ -115,11 +169,66 @@ class FlowScriptParser {
     this.consume(TOKEN_KINDS.TO, "Expected 'to' after the assignment name");
     const value = this.parseValueExpression();
     this.ensureNoRawArithmetic();
+    const terminated = this.match(TOKEN_KINDS.DOT);
+    if (terminated) {
+      this.advance();
+    }
 
     return {
       type: "SetStatement",
-      nameParts,
-      value
+      target,
+      nameParts: target.type === "VariableAssignmentTarget" ? target.nameParts : null,
+      value,
+      terminated
+    };
+  }
+
+  parseSetTarget() {
+    if (this.actionDepth > 0 && this.match(TOKEN_KINDS.ITS)) {
+      return this.parseSelfPropertyAssignmentTarget();
+    }
+
+    if (this.checkPropertyAccessPhrase()) {
+      return this.parsePropertyAssignmentTarget();
+    }
+
+    return {
+      type: "VariableAssignmentTarget",
+      nameParts: this.parseNameUntil(new Set([TOKEN_KINDS.TO, TOKEN_KINDS.ALWAYS]))
+    };
+  }
+
+  parsePropertyAssignmentTarget() {
+    this.consumeOptionalArticle();
+    const propertyNameParts = this.parseNormalizedName({
+      boundaryWords: new Set(["of"]),
+      errorMessage: "Expected a property name"
+    });
+    this.consumeWord("of", "Expected 'of' after the property name");
+    const instanceNameParts = this.parseNormalizedName({
+      boundaryKinds: new Set([TOKEN_KINDS.TO, TOKEN_KINDS.ALWAYS]),
+      errorMessage: "Expected an instance name"
+    });
+
+    return {
+      type: "PropertyAssignmentTarget",
+      propertyNameParts,
+      instanceNameParts
+    };
+  }
+
+  parseSelfPropertyAssignmentTarget() {
+    if (this.actionDepth === 0) {
+      throw this.error(this.peek(), "its is only allowed inside actions");
+    }
+
+    this.consume(TOKEN_KINDS.ITS, "Expected 'its' in a self property assignment");
+    return {
+      type: "SelfPropertyAssignmentTarget",
+      propertyNameParts: this.parseNormalizedName({
+        boundaryKinds: new Set([TOKEN_KINDS.TO, TOKEN_KINDS.ALWAYS]),
+        errorMessage: "Expected a property name after 'its'"
+      })
     };
   }
 
@@ -139,9 +248,90 @@ class FlowScriptParser {
     };
   }
 
+  parseReturnStatement() {
+    if (this.functionDepth > 0) {
+      if (this.returnAllowanceStack.at(-1) !== true) {
+        throw this.error(this.peek(), "Return is only allowed inside functions that declare a return type");
+      }
+    } else if (this.actionDepth > 0) {
+      if (this.returnAllowanceStack.at(-1) !== true) {
+        throw this.error(this.peek(), "Return is only allowed inside actions that declare a return type");
+      }
+    } else {
+      throw this.error(this.peek(), "Return is only allowed inside actions that declare a return type");
+    }
+
+    this.consume(TOKEN_KINDS.RETURN, "Expected 'Return' to start a return statement");
+    const value = this.parseValueExpression();
+    this.ensureNoRawArithmetic();
+    const terminated = this.match(TOKEN_KINDS.DOT);
+    if (terminated) {
+      this.advance();
+    }
+
+    return {
+      type: "ReturnStatement",
+      value,
+      terminated
+    };
+  }
+
+  parseEnsureStatement() {
+    if (this.currentBlockContext() !== "function") {
+      throw this.error(this.peek(), "Ensure is only allowed at the top level of a function body");
+    }
+
+    this.consume(TOKEN_KINDS.ENSURE, "Expected 'Ensure' to start a pre-condition");
+    const condition = this.parseValueExpressionWithBoundaries(new Set([TOKEN_KINDS.DOT, TOKEN_KINDS.NEWLINE, TOKEN_KINDS.EOF]));
+    const terminated = this.match(TOKEN_KINDS.DOT);
+    if (terminated) {
+      this.advance();
+    }
+
+    return {
+      type: "EnsureStatement",
+      condition,
+      terminated
+    };
+  }
+
+  parseVerifyStatement() {
+    if (this.currentBlockContext() !== "function") {
+      throw this.error(this.peek(), "Verify is only allowed at the top level of a function body");
+    }
+
+    this.consume(TOKEN_KINDS.VERIFY, "Expected 'Verify' to start a post-condition");
+    const condition = this.parseValueExpressionWithBoundaries(new Set([TOKEN_KINDS.DOT, TOKEN_KINDS.NEWLINE, TOKEN_KINDS.EOF]));
+    const terminated = this.match(TOKEN_KINDS.DOT);
+    if (terminated) {
+      this.advance();
+    }
+
+    return {
+      type: "VerifyStatement",
+      condition,
+      terminated
+    };
+  }
+
   parseCollectionDeclarationStatement() {
     this.consume(TOKEN_KINDS.CREATE, "Expected 'Create' to start a collection declaration");
-    this.consumeWord("a", "Expected 'a' after 'Create'");
+    this.consumeOptionalArticle();
+    return this.parseCollectionDeclarationStatementRest();
+  }
+
+  parseCreateStatement() {
+    this.consume(TOKEN_KINDS.CREATE, "Expected 'Create' to start a declaration or instance creation");
+    this.consumeOptionalArticle();
+
+    if (this.match(TOKEN_KINDS.LIST) || this.match(TOKEN_KINDS.SET)) {
+      return this.parseCollectionDeclarationStatementRest();
+    }
+
+    return this.parseInstanceCreationStatementRest();
+  }
+
+  parseCollectionDeclarationStatementRest() {
     const collectionKind = this.parseCollectionKind();
     this.consumeWord("called", "Expected 'called' after the collection kind");
     const nameParts = this.parseCollectionName();
@@ -205,6 +395,620 @@ class FlowScriptParser {
       source: null,
       where: null,
       select: null
+    };
+  }
+
+  parseFunctionDeclarationStatement() {
+    if (this.blockContextStack.length > 0) {
+      throw this.error(this.peek(), "Functions may only be declared at the top level");
+    }
+
+    this.consume(TOKEN_KINDS.HOW, "Expected 'How' to start a function declaration");
+    this.consume(TOKEN_KINDS.TO, "Expected 'to' after 'How'");
+
+    const nameParts = this.parseNormalizedName({
+      boundaryKinds: new Set([TOKEN_KINDS.COLON]),
+      boundaryWords: new Set(["using"]),
+      errorMessage: "Expected a function name",
+      stopAtAndReturnsPhrase: true
+    });
+
+    const params = [];
+    if (this.matchWord("using")) {
+      this.advance();
+      params.push(
+        this.parseNormalizedName({
+          boundaryKinds: new Set([TOKEN_KINDS.COLON]),
+          errorMessage: "Expected a function parameter name",
+          stopAtAndSeparator: true,
+          stopAtAndReturnsPhrase: true
+        })
+      );
+
+      while (this.match(TOKEN_KINDS.AND) && !this.checkAndReturnsPhrase()) {
+        this.advance();
+        params.push(
+          this.parseNormalizedName({
+            boundaryKinds: new Set([TOKEN_KINDS.COLON]),
+            errorMessage: "Expected a function parameter name",
+            stopAtAndSeparator: true,
+            stopAtAndReturnsPhrase: true
+          })
+        );
+      }
+    }
+
+    let returnType = null;
+    if (this.checkAndReturnsPhrase()) {
+      this.advance();
+      this.consume(TOKEN_KINDS.RETURNS, "Expected 'returns' after 'and'");
+      returnType = this.parseTypeReference();
+    }
+
+    const body = this.parseFunctionBlock(returnType !== null, nameParts);
+
+    return {
+      type: "FunctionDeclarationStatement",
+      nameParts,
+      params,
+      returnType,
+      body
+    };
+  }
+
+  parseShareStatement() {
+    if (this.blockContextStack.length > 0) {
+      throw this.error(this.peek(), "Share statements may only appear at the top level");
+    }
+
+    this.consume(TOKEN_KINDS.SHARE, "Expected 'Share' to start an export statement");
+    const namePartsList = [
+      this.parseNormalizedName({
+        boundaryKinds: new Set([TOKEN_KINDS.DOT, TOKEN_KINDS.NEWLINE, TOKEN_KINDS.EOF]),
+        errorMessage: "Expected a shared name",
+        stopAtAndSeparator: true
+      })
+    ];
+
+    while (this.match(TOKEN_KINDS.AND)) {
+      this.advance();
+      namePartsList.push(
+        this.parseNormalizedName({
+          boundaryKinds: new Set([TOKEN_KINDS.DOT, TOKEN_KINDS.NEWLINE, TOKEN_KINDS.EOF]),
+          errorMessage: "Expected a shared name",
+          stopAtAndSeparator: true
+        })
+      );
+    }
+
+    const terminated = this.match(TOKEN_KINDS.DOT);
+    if (terminated) {
+      this.advance();
+    }
+
+    return {
+      type: "ShareStatement",
+      namePartsList,
+      terminated
+    };
+  }
+
+  parseUseStatement() {
+    if (this.blockContextStack.length > 0) {
+      throw this.error(this.peek(), "Use statements may only appear at the top level");
+    }
+
+    this.consume(TOKEN_KINDS.USE, "Expected 'Use' to start an import statement");
+
+    if (this.match(TOKEN_KINDS.STRING)) {
+      const sourcePath = JSON.parse(this.advance().lexeme);
+      this.consumeWord("as", "Expected 'as' after the module path");
+      const aliasNameParts = this.parseNormalizedName({
+        boundaryKinds: new Set([TOKEN_KINDS.DOT, TOKEN_KINDS.NEWLINE, TOKEN_KINDS.EOF]),
+        errorMessage: "Expected a module alias name"
+      });
+
+      const terminated = this.match(TOKEN_KINDS.DOT);
+      if (terminated) {
+        this.advance();
+      }
+
+      return {
+        type: "UseModuleAliasStatement",
+        sourcePath,
+        aliasNameParts,
+        terminated
+      };
+    }
+
+    const imports = [
+      this.parseNormalizedName({
+        boundaryWords: new Set(["from"]),
+        boundaryKinds: new Set([TOKEN_KINDS.DOT, TOKEN_KINDS.NEWLINE, TOKEN_KINDS.EOF]),
+        errorMessage: "Expected an imported name",
+        stopAtAndSeparator: true
+      })
+    ];
+
+    while (this.match(TOKEN_KINDS.AND)) {
+      this.advance();
+      imports.push(
+        this.parseNormalizedName({
+          boundaryWords: new Set(["from"]),
+          boundaryKinds: new Set([TOKEN_KINDS.DOT, TOKEN_KINDS.NEWLINE, TOKEN_KINDS.EOF]),
+          errorMessage: "Expected an imported name",
+          stopAtAndSeparator: true
+        })
+      );
+    }
+
+    this.consumeWord("from", "Expected 'from' after the imported name list");
+    const sourceToken = this.consume(TOKEN_KINDS.STRING, "Expected a quoted relative .flow path after 'from'");
+    const sourcePath = JSON.parse(sourceToken.lexeme);
+
+    const terminated = this.match(TOKEN_KINDS.DOT);
+    if (terminated) {
+      this.advance();
+    }
+
+    return {
+      type: "UseNamedStatement",
+      imports,
+      sourcePath,
+      terminated
+    };
+  }
+
+  parseTypeDeclarationStatement() {
+    this.consume(TOKEN_KINDS.DEFINE, "Expected 'Define' to start a type declaration");
+    this.consumeOptionalArticle();
+    this.consume(TOKEN_KINDS.TYPE, "Expected 'Type' after 'Define'");
+    this.consumeWord("called", "Expected 'called' after 'Define a Type'");
+    const nameParts = this.parseNormalizedName({
+      boundaryWords: new Set(["which"]),
+      boundaryKinds: new Set([TOKEN_KINDS.COLON]),
+      errorMessage: "Expected a type name"
+    });
+
+    let parentTypeNameParts = null;
+    if (this.matchWord("which")) {
+      this.advance();
+      this.consume(TOKEN_KINDS.IS, "Expected 'is' after 'which'");
+      this.consumeOptionalArticle();
+
+      if (this.matchWord("kind")) {
+        this.advance();
+        this.consumeWord("of", "Expected 'of' after 'kind'");
+      }
+
+      parentTypeNameParts = this.parseNormalizedName({
+        boundaryKinds: new Set([TOKEN_KINDS.COLON]),
+        errorMessage: "Expected a parent type name"
+      });
+    }
+
+    this.consume(TOKEN_KINDS.COLON, "Expected ':' after the type header");
+    if (this.match(TOKEN_KINDS.COMMENT)) {
+      this.advance();
+    }
+    this.consume(TOKEN_KINDS.NEWLINE, "Expected a newline after the type header");
+    this.consume(TOKEN_KINDS.INDENT, "Expected an indented type block");
+
+    const properties = [];
+    const actions = [];
+    let createdHook = null;
+    let updatedHook = null;
+    this.skipIgnorable();
+
+    while (!this.match(TOKEN_KINDS.DEDENT) && !this.isAtEnd()) {
+      const member = this.parseTypeMember();
+
+      if (member.type === "TypePropertyDeclaration") {
+        properties.push(member);
+        this.consumeLineEnd("Expected the end of the property declaration");
+      } else if (member.type === "TypeLifecycleHook") {
+        if (member.hookKind === "created") {
+          if (createdHook) {
+            throw this.error(this.peek(), "A type can only define one 'When created:' hook");
+          }
+
+          createdHook = member;
+        } else if (member.hookKind === "updated") {
+          if (updatedHook) {
+            throw this.error(this.peek(), "A type can only define one 'When updated:' hook");
+          }
+
+          updatedHook = member;
+        }
+      } else {
+        actions.push(member);
+      }
+
+      this.skipIgnorable();
+    }
+
+    this.consume(TOKEN_KINDS.DEDENT, "Expected the end of the type block");
+
+    return {
+      type: "TypeDeclarationStatement",
+      nameParts,
+      parentTypeNameParts,
+      properties,
+      actions,
+      createdHook,
+      updatedHook
+    };
+  }
+
+  parseTypeMember() {
+    if (this.match(TOKEN_KINDS.WHEN)) {
+      return this.parseTypeInitializationHook();
+    }
+
+    this.consumeWord("it", "Expected 'It' to start a type member declaration");
+
+    if (this.matchWord("has")) {
+      return this.parseTypePropertyDeclaration();
+    }
+
+    if (this.matchWord("can")) {
+      return this.parseTypeActionDeclaration();
+    }
+
+    throw this.error(this.peek(), "Expected 'has' or 'can' after 'It'");
+  }
+
+  parseTypeInitializationHook() {
+    this.consume(TOKEN_KINDS.WHEN, "Expected 'When' to start an initialization hook");
+    const hookKeyword = this.peek();
+    if (!this.matchWord("created") && !this.matchWord("updated")) {
+      throw this.error(hookKeyword, "Expected 'created' or 'updated' after 'When'");
+    }
+
+    const hookKind = this.advance().lexeme.toLowerCase();
+    const params = [];
+
+    if (this.matchWord("using")) {
+      if (hookKind !== "created") {
+        throw this.error(this.peek(), "Only 'When created:' may declare parameters");
+      }
+
+      this.advance();
+      params.push(this.parseNormalizedName({
+        boundaryKinds: new Set([TOKEN_KINDS.COLON, TOKEN_KINDS.COMMA]),
+        errorMessage: "Expected a constructor parameter name"
+      }));
+
+      while (this.match(TOKEN_KINDS.COMMA)) {
+        this.advance();
+        params.push(this.parseNormalizedName({
+          boundaryKinds: new Set([TOKEN_KINDS.COLON, TOKEN_KINDS.COMMA]),
+          errorMessage: "Expected a constructor parameter name"
+        }));
+      }
+    }
+
+    const body = this.parseActionBlock();
+    return {
+      type: "TypeLifecycleHook",
+      hookKind,
+      params,
+      body
+    };
+  }
+
+  parseTypePropertyDeclaration() {
+    this.consumeWord("has", "Expected 'has' after 'It'");
+    this.consumeOptionalArticle();
+    const accessLevel = this.parseOptionalAccessModifier();
+    const nameParts = this.parseNormalizedName({
+      boundaryKinds: new Set([TOKEN_KINDS.LPAREN]),
+      errorMessage: "Expected a property name"
+    });
+    this.consume(TOKEN_KINDS.LPAREN, "Expected '(' after the property name");
+    const valueType = this.parseTypeReference();
+
+    let defaultValue = null;
+    if (this.match(TOKEN_KINDS.COMMA)) {
+      this.advance();
+      this.consume(TOKEN_KINDS.DEFAULT, "Expected 'default' after ','");
+      this.consume(TOKEN_KINDS.IS, "Expected 'is' after 'default'");
+      defaultValue = this.parseValueExpression();
+      this.ensureNoRawArithmetic();
+    }
+
+    this.consume(TOKEN_KINDS.RPAREN, "Expected ')' after the property type");
+    if (this.match(TOKEN_KINDS.DOT)) {
+      this.advance();
+    }
+
+    return {
+      type: "TypePropertyDeclaration",
+      accessLevel,
+      nameParts,
+      valueType,
+      defaultValue
+    };
+  }
+
+  parseTypeActionDeclaration() {
+    this.consumeWord("can", "Expected 'can' after 'It'");
+    const actionNameToken = this.consume(TOKEN_KINDS.STRING, "Expected a quoted action name after 'It can'");
+    const actionName = JSON.parse(actionNameToken.lexeme);
+    let accessLevel = "public";
+    if (this.matchWord("as")) {
+      this.advance();
+      accessLevel = this.parseRequiredAccessModifier();
+    }
+    const params = [];
+
+    if (this.matchWord("using")) {
+      this.advance();
+      params.push(this.parseNormalizedName({
+        boundaryKinds: new Set([TOKEN_KINDS.COLON, TOKEN_KINDS.COMMA]),
+        errorMessage: "Expected an action parameter name"
+      }));
+
+      while (this.match(TOKEN_KINDS.COMMA)) {
+        this.advance();
+        params.push(this.parseNormalizedName({
+          boundaryKinds: new Set([TOKEN_KINDS.COLON, TOKEN_KINDS.COMMA]),
+          errorMessage: "Expected an action parameter name"
+        }));
+      }
+    }
+
+    let returnType = null;
+    if (this.match(TOKEN_KINDS.AND)) {
+      this.advance();
+      this.consume(TOKEN_KINDS.RETURNS, "Expected 'returns' after 'and'");
+      returnType = this.parseTypeReference();
+    }
+
+    const body = this.parseActionBlock(returnType !== null);
+    return {
+      type: "TypeActionDeclaration",
+      actionName,
+      accessLevel,
+      params,
+      returnType,
+      body
+    };
+  }
+
+  parseInstanceCreationStatementRest() {
+    const typeNameParts = this.parseNormalizedName({
+      boundaryWords: new Set(["called"]),
+      errorMessage: "Expected a type name after 'Create'"
+    });
+    this.consumeWord("called", "Expected 'called' after the type name");
+    const nameParts = this.parseNormalizedName({
+      boundaryKinds: new Set([TOKEN_KINDS.COLON, TOKEN_KINDS.DOT, TOKEN_KINDS.NEWLINE, TOKEN_KINDS.EOF]),
+      boundaryWords: new Set(["using"]),
+      errorMessage: "Expected an instance name"
+    });
+
+    let constructorArgs = [];
+    let initializers = [];
+
+    if (this.matchWord("using")) {
+      this.advance();
+      constructorArgs = this.parseDelimitedValueExpressionList(new Set([TOKEN_KINDS.COLON, TOKEN_KINDS.DOT, TOKEN_KINDS.NEWLINE, TOKEN_KINDS.EOF]));
+      this.ensureNoRawArithmetic();
+    }
+
+    if (this.match(TOKEN_KINDS.COLON)) {
+      initializers = this.parseInstanceInitializerBlock();
+      return {
+        type: "InstanceCreationStatement",
+        typeNameParts,
+        nameParts,
+        constructorArgs,
+        initializers
+      };
+    }
+
+    if (this.match(TOKEN_KINDS.DOT)) {
+      this.advance();
+    }
+
+    return {
+      type: "InstanceCreationStatement",
+      typeNameParts,
+      nameParts,
+      constructorArgs,
+      initializers
+    };
+  }
+
+  parseInstanceInitializerBlock() {
+    this.consume(TOKEN_KINDS.COLON, "Expected ':' before the instance initializer block");
+    if (this.match(TOKEN_KINDS.COMMENT)) {
+      this.advance();
+    }
+    this.consume(TOKEN_KINDS.NEWLINE, "Expected a newline after ':'");
+    this.consume(TOKEN_KINDS.INDENT, "Expected an indented instance initializer block");
+
+    const initializers = [];
+    this.skipIgnorable();
+
+    while (!this.match(TOKEN_KINDS.DEDENT) && !this.isAtEnd()) {
+      const nameParts = this.parseNormalizedName({
+        boundaryKinds: new Set([TOKEN_KINDS.IS]),
+        errorMessage: "Expected a property name in the instance initializer"
+      });
+      this.consume(TOKEN_KINDS.IS, "Expected 'is' after the property name");
+      const value = this.parseValueExpression();
+      this.ensureNoRawArithmetic();
+      if (this.match(TOKEN_KINDS.DOT)) {
+        this.advance();
+      }
+
+      initializers.push({ nameParts, value });
+      this.consumeLineEnd("Expected the end of the instance initializer");
+      this.skipIgnorable();
+    }
+
+    this.consume(TOKEN_KINDS.DEDENT, "Expected the end of the instance initializer block");
+    return initializers;
+  }
+
+  parseActionCallTarget() {
+    let targetType = "InstanceReference";
+    let targetNameParts = null;
+
+    if (this.match(TOKEN_KINDS.ITSELF)) {
+      if (this.actionDepth === 0) {
+        throw this.error(this.peek(), "itself is only allowed inside actions");
+      }
+
+      this.advance();
+      targetType = "SelfActionTarget";
+    } else if (this.match(TOKEN_KINDS.SUPER)) {
+      if (this.actionDepth === 0) {
+        throw this.error(this.peek(), "super is only allowed inside actions and lifecycle hooks");
+      }
+
+      this.advance();
+      targetType = "SuperActionTarget";
+    } else {
+      targetNameParts = this.parseNormalizedName({
+        boundaryKinds: new Set([TOKEN_KINDS.TO]),
+        errorMessage: "Expected an instance name after 'Ask'"
+      });
+    }
+
+    return {
+      targetType,
+      targetNameParts
+    };
+  }
+
+  parseActionInvocation() {
+    this.consume(TOKEN_KINDS.ASK, "Expected 'Ask' to start an action call");
+    return this.parseActionInvocationRest();
+  }
+
+  parseActionInvocationAfterAskingWord() {
+    this.consumeWord("asking", "Expected 'asking' in 'the result of asking ...'");
+    return this.parseActionInvocationRest();
+  }
+
+  parseActionInvocationRest() {
+    const { targetType, targetNameParts } = this.parseActionCallTarget();
+
+    this.consume(TOKEN_KINDS.TO, "Expected 'to' after the action target");
+    const actionNameToken = this.consume(TOKEN_KINDS.STRING, "Expected a quoted action name after 'to'");
+    const actionName = JSON.parse(actionNameToken.lexeme);
+    const args = [];
+
+    if (this.matchWord("using")) {
+      this.advance();
+      args.push(this.parseValueExpression());
+      this.ensureNoRawArithmetic();
+
+      while (this.match(TOKEN_KINDS.COMMA)) {
+        this.advance();
+        args.push(this.parseValueExpression());
+        this.ensureNoRawArithmetic();
+      }
+    }
+
+    return {
+      targetType,
+      targetNameParts,
+      actionName,
+      args
+    };
+  }
+
+  parseActionCallStatement() {
+    const invocation = this.parseActionInvocation();
+
+    const terminated = this.match(TOKEN_KINDS.DOT);
+    if (terminated) {
+      this.advance();
+    }
+
+    return {
+      type: "ActionCallStatement",
+      ...invocation,
+      terminated
+    };
+  }
+
+  parseFunctionCallStatement() {
+    const startToken = this.peek();
+    const invocation = this.parseFunctionInvocation(false);
+
+    if (
+      !this.match(TOKEN_KINDS.DOT) &&
+      !this.match(TOKEN_KINDS.NEWLINE) &&
+      !this.match(TOKEN_KINDS.EOF) &&
+      !this.match(TOKEN_KINDS.DEDENT) &&
+      !this.match(TOKEN_KINDS.COMMENT)
+    ) {
+      throw this.error(startToken, `Unsupported statement starting with ${startToken.lexeme || startToken.kind}`);
+    }
+
+    const terminated = this.match(TOKEN_KINDS.DOT);
+    if (terminated) {
+      this.advance();
+    }
+
+    return {
+      type: "FunctionCallStatement",
+      ...invocation,
+      terminated
+    };
+  }
+
+  parseFunctionCallExpression() {
+    return {
+      type: "FunctionCallExpression",
+      ...this.parseFunctionInvocation(true)
+    };
+  }
+
+  parseFunctionInvocation(valueContext = false) {
+    const boundaryKinds = new Set([TOKEN_KINDS.DOT, TOKEN_KINDS.NEWLINE, TOKEN_KINDS.EOF, TOKEN_KINDS.COLON, TOKEN_KINDS.COMMA, TOKEN_KINDS.RPAREN]);
+    const callee = this.parseFunctionInvocationTarget(boundaryKinds);
+
+    const args = [];
+    if (this.matchWord("using")) {
+      this.advance();
+      args.push(...this.parseAndSeparatedValueExpressions(boundaryKinds));
+      this.ensureNoRawArithmetic();
+    }
+
+    if (!valueContext && args.length === 0 && this.peek().kind === TOKEN_KINDS.AND) {
+      throw this.error(this.peek(), "Function call arguments must follow 'using'");
+    }
+
+    return {
+      callee,
+      args
+    };
+  }
+
+  parseFunctionInvocationTarget(boundaryKinds) {
+    const invocationBoundaryKinds = new Set(boundaryKinds);
+
+    if (this.actionDepth > 0 && this.match(TOKEN_KINDS.ITS)) {
+      return this.parseSelfPropertyExpression(invocationBoundaryKinds);
+    }
+
+    if (this.checkPropertyAccessPhrase()) {
+      return this.parsePropertyAccessExpression(invocationBoundaryKinds, new Set(["using"]));
+    }
+
+    return {
+      type: "ReferenceExpression",
+      nameParts: this.parseNormalizedName({
+        boundaryKinds: invocationBoundaryKinds,
+        boundaryWords: new Set(["using"]),
+        errorMessage: "Expected a function name or callable reference"
+      })
     };
   }
 
@@ -284,7 +1088,7 @@ class FlowScriptParser {
 
     if (this.match(TOKEN_KINDS.TAKE)) {
       this.advance();
-      this.consume(TOKEN_KINDS.THE, "Expected 'the' after 'take'");
+      this.consumeOptionalArticle();
       this.consumeWord("first", "Expected 'first' after 'take the'");
       const count = this.parseValueExpression();
       this.ensureNoRawArithmetic();
@@ -308,7 +1112,7 @@ class FlowScriptParser {
       this.consume(TOKEN_KINDS.TO, "Expected 'to' after 'save'");
       const targetNameParts = this.parseNameUntilWord("as");
       this.consumeWord("as", "Expected 'as' after the save target");
-      this.consumeWord("a", "Expected 'a' after 'as'");
+      this.consumeOptionalArticle();
       const collectionKind = this.parseCollectionKind();
       return {
         type: "SaveStep",
@@ -398,7 +1202,7 @@ class FlowScriptParser {
     const itemNameParts = this.parseNameUntil(new Set([TOKEN_KINDS.IN]));
     this.consume(TOKEN_KINDS.IN, "Expected 'in' after the loop item name");
     const collection = this.parseValueExpression();
-    const body = this.parseBlock();
+    const body = this.parseLoopBlock();
 
     return {
       type: "ForEachStatement",
@@ -412,7 +1216,7 @@ class FlowScriptParser {
     this.consume(TOKEN_KINDS.REPEAT, "Expected 'Repeat' to start a repeat loop");
     const count = this.parseValueExpression();
     this.consume(TOKEN_KINDS.TIMES, "Expected 'times' after the repeat count");
-    const body = this.parseBlock();
+    const body = this.parseLoopBlock();
 
     return {
       type: "RepeatStatement",
@@ -442,7 +1246,7 @@ class FlowScriptParser {
       };
     }
 
-    const body = this.parseBlock();
+    const body = this.parseLoopBlock();
 
     return {
       type: "WhileStatement",
@@ -451,35 +1255,182 @@ class FlowScriptParser {
     };
   }
 
-  parseBlock() {
+  parseBreakStatement() {
+    if (this.loopDepth === 0) {
+      throw this.error(this.peek(), "Break is only allowed inside loops");
+    }
+
+    this.consume(TOKEN_KINDS.BREAK, "Expected 'Break' to start a break statement");
+    const terminated = this.match(TOKEN_KINDS.DOT);
+    if (terminated) {
+      this.advance();
+    }
+
+    return {
+      type: "BreakStatement",
+      terminated
+    };
+  }
+
+  parseContinueStatement() {
+    if (this.loopDepth === 0) {
+      throw this.error(this.peek(), "Continue is only allowed inside loops");
+    }
+
+    this.consume(TOKEN_KINDS.CONTINUE, "Expected 'Continue' to start a continue statement");
+    const terminated = this.match(TOKEN_KINDS.DOT);
+    if (terminated) {
+      this.advance();
+    }
+
+    return {
+      type: "ContinueStatement",
+      terminated
+    };
+  }
+
+  parseLoopBlock() {
+    this.loopDepth += 1;
+
+    try {
+      return this.parseBlock("generic");
+    } finally {
+      this.loopDepth -= 1;
+    }
+  }
+
+  parseActionBlock(allowReturn = false) {
+    this.actionDepth += 1;
+    this.returnAllowanceStack.push(allowReturn);
+
+    try {
+      return this.parseBlock("action");
+    } finally {
+      this.returnAllowanceStack.pop();
+      this.actionDepth -= 1;
+    }
+  }
+
+  parseFunctionBlock(allowReturn = false, functionNameParts = []) {
+    this.functionDepth += 1;
+    this.returnAllowanceStack.push(allowReturn);
+
+    try {
+      const body = this.parseBlock("function");
+      this.validateFunctionBody(body, allowReturn, functionNameParts);
+      return body;
+    } finally {
+      this.returnAllowanceStack.pop();
+      this.functionDepth -= 1;
+    }
+  }
+
+  parseBlock(blockContext = "generic") {
     this.consume(TOKEN_KINDS.COLON, "Expected ':' before a block");
     if (this.match(TOKEN_KINDS.COMMENT)) {
       this.advance();
     }
     this.consume(TOKEN_KINDS.NEWLINE, "Expected a newline after ':'");
     this.consume(TOKEN_KINDS.INDENT, "Expected an indented block");
+    this.blockContextStack.push(blockContext);
 
     const body = [];
-    this.skipIgnorable();
-
-    while (!this.match(TOKEN_KINDS.DEDENT) && !this.isAtEnd()) {
-      body.push(this.parseStatement());
-      this.consumeStatementEnd();
+    try {
       this.skipIgnorable();
+
+      while (!this.match(TOKEN_KINDS.DEDENT) && !this.isAtEnd()) {
+        body.push(this.parseStatement());
+        this.consumeStatementEnd();
+        this.skipIgnorable();
+      }
+
+      this.consume(TOKEN_KINDS.DEDENT, "Expected the end of the block");
+      return body;
+    } finally {
+      this.blockContextStack.pop();
+    }
+  }
+
+  validateFunctionBody(body, allowReturn, functionNameParts) {
+    let phase = "ensure";
+    let sawReturn = false;
+    const functionDisplayName = functionNameParts.length > 0 ? functionNameParts.join(" ") : "anonymous function";
+
+    for (let index = 0; index < body.length; index += 1) {
+      const statement = body[index];
+
+      if (statement.type === "EnsureStatement") {
+        if (phase !== "ensure") {
+          throw this.error(this.peek(), `Ensure statements must appear at the top of function "${functionDisplayName}"`);
+        }
+
+        continue;
+      }
+
+      if (statement.type === "VerifyStatement") {
+        if (phase === "afterReturn") {
+          throw this.error(this.peek(), `Verify statements must appear before the final Return in function "${functionDisplayName}"`);
+        }
+
+        phase = "verify";
+        continue;
+      }
+
+      if (statement.type === "ReturnStatement") {
+        if (!allowReturn) {
+          throw this.error(this.peek(), `Function "${functionDisplayName}" does not declare a return type`);
+        }
+
+        if (index !== body.length - 1) {
+          throw this.error(this.peek(), `Returning function "${functionDisplayName}" must end with a single final Return`);
+        }
+
+        sawReturn = true;
+        phase = "afterReturn";
+        continue;
+      }
+
+      if (phase === "verify" || phase === "afterReturn") {
+        throw this.error(this.peek(), `Ordinary statements must appear before Verify clauses in function "${functionDisplayName}"`);
+      }
+
+      phase = "body";
     }
 
-    this.consume(TOKEN_KINDS.DEDENT, "Expected the end of the block");
-    return body;
+    if (allowReturn && !sawReturn) {
+      throw this.error(this.peek(), `Returning function "${functionDisplayName}" must end with a Return statement`);
+    }
   }
 
   parseValueExpression() {
     return this.parseOrExpression();
   }
 
+  parseValueExpressionWithBoundaries(boundaryKinds) {
+    this.expressionBoundaryStack.push(boundaryKinds);
+
+    try {
+      return this.parseValueExpression();
+    } finally {
+      this.expressionBoundaryStack.pop();
+    }
+  }
+
+  parseAndSeparatedValueExpressions(boundaryKinds) {
+    const values = [this.parseValueExpressionWithBoundaries(new Set([...boundaryKinds, TOKEN_KINDS.AND]))];
+
+    while (this.match(TOKEN_KINDS.AND) && !this.checkAndReturnsPhrase()) {
+      this.advance();
+      values.push(this.parseValueExpressionWithBoundaries(new Set([...boundaryKinds, TOKEN_KINDS.AND])));
+    }
+
+    return values;
+  }
+
   parseOrExpression() {
     let expression = this.parseAndExpression();
 
-    while (this.match(TOKEN_KINDS.OR)) {
+    while (this.match(TOKEN_KINDS.OR) && !this.isCurrentExpressionBoundary(TOKEN_KINDS.OR)) {
       const operator = this.advance();
       const right = this.parseAndExpression();
       expression = {
@@ -496,7 +1447,7 @@ class FlowScriptParser {
   parseAndExpression() {
     let expression = this.parseNotExpression();
 
-    while (this.match(TOKEN_KINDS.AND)) {
+    while (this.match(TOKEN_KINDS.AND) && !this.isCurrentExpressionBoundary(TOKEN_KINDS.AND)) {
       const operator = this.advance();
       const right = this.parseNotExpression();
       expression = {
@@ -545,8 +1496,29 @@ class FlowScriptParser {
     let expression = this.parseAtomicValueExpression();
 
     while (true) {
+      if (this.match(TOKEN_KINDS.IS) && this.tokens[this.index + 1]?.kind === TOKEN_KINDS.WORD && this.tokens[this.index + 1]?.lexeme.toLowerCase() === "empty") {
+        this.advance();
+        this.advance();
+        expression = {
+          type: "CollectionIsEmptyExpression",
+          collection: expression
+        };
+        continue;
+      }
+
       if (this.match(TOKEN_KINDS.CONTAINS)) {
         this.advance();
+
+        if (this.matchWord("item")) {
+          this.advance();
+          expression = {
+            type: "CollectionContainsExpression",
+            collection: expression,
+            item: this.parseAtomicValueExpression()
+          };
+          continue;
+        }
+
         expression = {
           type: "StringOperationExpression",
           operator: "CONTAINS",
@@ -554,6 +1526,34 @@ class FlowScriptParser {
           right: this.parseAtomicValueExpression()
         };
         continue;
+      }
+
+      if (this.matchWord("has")) {
+        this.advance();
+
+        if (this.matchWord("any")) {
+          this.advance();
+          expression = {
+            type: "CollectionHasExpression",
+            mode: "any",
+            collection: expression,
+            items: this.parseLiteralCollectionItemList()
+          };
+          continue;
+        }
+
+        if (this.matchWord("all")) {
+          this.advance();
+          expression = {
+            type: "CollectionHasExpression",
+            mode: "all",
+            collection: expression,
+            items: this.parseLiteralCollectionItemList()
+          };
+          continue;
+        }
+
+        throw this.error(this.peek(), "Expected 'any' or 'all' after 'has'");
       }
 
       if (this.match(TOKEN_KINDS.STARTS)) {
@@ -601,8 +1601,48 @@ class FlowScriptParser {
       return this.parseListExpression();
     }
 
+    if (this.checkAnonymousDoThisPhrase()) {
+      return this.parseAnonymousCallableExpression(false);
+    }
+
     if (this.checkResultPhrase()) {
       return this.parseResultExpression();
+    }
+
+    if (this.checkNoValuePhrase()) {
+      return this.parseNoValueLiteralExpression();
+    }
+
+    if (this.matchWord("first")) {
+      return this.parseFirstAccessExpression();
+    }
+
+    if (this.matchWord("last")) {
+      return this.parseLastAccessExpression();
+    }
+
+    if (this.checkItemAtIndexPhrase()) {
+      return this.parseItemAtIndexExpression();
+    }
+
+    if (this.checkItemsFromIndexPhrase()) {
+      return this.parseItemsFromIndexRangeExpression();
+    }
+
+    if (this.checkIndexOfPhrase()) {
+      return this.parseIndexOfExpression();
+    }
+
+    if (this.checkCountPhrase()) {
+      return this.parseCountExpression();
+    }
+
+    if (this.actionDepth > 0 && this.match(TOKEN_KINDS.ITS)) {
+      return this.parseSelfPropertyExpression();
+    }
+
+    if (this.checkPropertyAccessPhrase()) {
+      return this.parsePropertyAccessExpression();
     }
 
     if (VALUE_BUILTIN_FUNCTION_KINDS.has(this.peek().kind)) {
@@ -642,8 +1682,352 @@ class FlowScriptParser {
     return this.parseReferenceExpression();
   }
 
+  parseFirstAccessExpression() {
+    const checkpoint = this.index;
+
+    try {
+      if (this.checkFirstItemPhrase()) {
+        return this.parseFirstItemExpression();
+      }
+
+      return this.parseCollectionTakeExpression("first");
+    } catch (error) {
+      this.index = checkpoint;
+      return this.parseReferenceExpression();
+    }
+  }
+
+  parseLastAccessExpression() {
+    const checkpoint = this.index;
+
+    try {
+      if (this.checkLastItemPhrase()) {
+        return this.parseLastItemExpression();
+      }
+
+      return this.parseCollectionTakeExpression("last");
+    } catch (error) {
+      this.index = checkpoint;
+      return this.parseReferenceExpression();
+    }
+  }
+
+  parseNoValueLiteralExpression() {
+    const noToken = this.peek();
+    if (noToken.lexeme.toLowerCase() !== "no") {
+      throw this.error(noToken, "Expected 'no' in 'no value'");
+    }
+
+    this.advance();
+    this.consumeWord("value", "Expected 'value' after 'no'");
+    return {
+      type: "LiteralExpression",
+      valueType: "no_value",
+      value: null,
+      raw: "no value"
+    };
+  }
+
+  parseFirstItemExpression() {
+    this.consumeWord("first", "Expected 'first' in 'first item of ...'");
+    this.consumeWord("item", "Expected 'item' after 'first'");
+    this.consumeWord("of", "Expected 'of' after 'first item'");
+    const collection = this.parseCollectionAccessTargetExpression(new Set(["where"]));
+
+    let where = null;
+    if (this.matchWord("where")) {
+      this.advance();
+      where = this.parseCollectionPredicate();
+    }
+
+    return {
+      type: "CollectionAccessExpression",
+      accessKind: "first",
+      collection,
+      where
+    };
+  }
+
+  parseLastItemExpression() {
+    this.consumeWord("last", "Expected 'last' in 'last item of ...'");
+    this.consumeWord("item", "Expected 'item' after 'last'");
+    this.consumeWord("of", "Expected 'of' after 'last item'");
+    return {
+      type: "CollectionAccessExpression",
+      accessKind: "last",
+      collection: this.parseCollectionAccessTargetExpression(),
+      where: null
+    };
+  }
+
+  parseItemAtIndexExpression() {
+    this.consumeWord("item", "Expected 'item' in 'item at index ... of ...'");
+    this.consumeWord("at", "Expected 'at' after 'item'");
+    this.consumeWord("index", "Expected 'index' after 'item at'");
+    const index = this.parseAtomicValueExpression();
+    this.consumeWord("of", "Expected 'of' after the index value");
+    return {
+      type: "CollectionIndexExpression",
+      collection: this.parseCollectionAccessTargetExpression(),
+      index
+    };
+  }
+
+  parseItemsFromIndexRangeExpression() {
+    this.consumeWord("items", "Expected 'items' in 'items from index ... to ... of ...'");
+    this.consumeWord("from", "Expected 'from' after 'items'");
+    this.consumeWord("index", "Expected 'index' after 'items from'");
+    const start = this.parseAtomicValueExpression();
+    this.consume(TOKEN_KINDS.TO, "Expected 'to' after the start index");
+    const end = this.parseAtomicValueExpression();
+    this.consumeWord("of", "Expected 'of' after the end index");
+    return {
+      type: "CollectionSliceExpression",
+      collection: this.parseCollectionAccessTargetExpression(),
+      start,
+      end
+    };
+  }
+
+  parseCountExpression() {
+    this.consumeWord("count", "Expected 'count' in 'count of ...'");
+    this.consumeWord("of", "Expected 'of' after 'count'");
+    const collection = this.parseCollectionAccessTargetExpression(new Set(["where"]));
+
+    let where = null;
+    if (this.matchWord("where")) {
+      this.advance();
+      where = this.parseCollectionPredicate();
+    }
+
+    return {
+      type: "CollectionCountExpression",
+      collection,
+      where
+    };
+  }
+
+  parseCollectionTakeExpression(side) {
+    this.consumeWord(side, `Expected '${side}' in '${side} N items of ...'`);
+    const count = this.parseAtomicValueExpression();
+    this.consumeWord("items", `Expected 'items' after '${side} <count>'`);
+    this.consumeWord("of", "Expected 'of' after the item count");
+    return {
+      type: "CollectionTakeExpression",
+      side,
+      count,
+      collection: this.parseCollectionAccessTargetExpression()
+    };
+  }
+
+  parseIndexOfExpression() {
+    this.consumeWord("index", "Expected 'index' in 'index of ... in ...'");
+    this.consumeWord("of", "Expected 'of' after 'index'");
+    const item = this.parseAtomicValueExpression();
+    this.consume(TOKEN_KINDS.IN, "Expected 'in' after the target item");
+    return {
+      type: "CollectionIndexOfExpression",
+      item,
+      collection: this.parseCollectionAccessTargetExpression()
+    };
+  }
+
+  parseLiteralCollectionItemList() {
+    this.consumeWord("of", "Expected 'of' after the collection helper mode");
+    this.consume(TOKEN_KINDS.LPAREN, "Expected '(' to start the helper item list");
+
+    const items = [];
+    if (!this.match(TOKEN_KINDS.RPAREN)) {
+      items.push(this.parseLiteralCollectionItem());
+
+      while (this.match(TOKEN_KINDS.COMMA)) {
+        this.advance();
+        items.push(this.parseLiteralCollectionItem());
+      }
+    }
+
+    this.consume(TOKEN_KINDS.RPAREN, "Expected ')' after the helper item list");
+    return items;
+  }
+
+  parseLiteralCollectionItem() {
+    const expression = this.parseAtomicValueExpression();
+
+    if (expression.type !== "LiteralExpression") {
+      throw this.error(this.peek(), "Collection membership helpers expect a literal item list");
+    }
+
+    return expression;
+  }
+
+  parseCollectionAccessTargetExpression(boundaryWords = new Set()) {
+    if (this.checkListPhrase()) {
+      return this.parseListExpression();
+    }
+
+    if (this.checkResultPhrase()) {
+      return this.parseResultExpression();
+    }
+
+    if (this.checkNoValuePhrase()) {
+      return this.parseNoValueLiteralExpression();
+    }
+
+    if (this.matchWord("first")) {
+      return this.parseFirstAccessExpression();
+    }
+
+    if (this.matchWord("last")) {
+      return this.parseLastAccessExpression();
+    }
+
+    if (this.checkItemAtIndexPhrase()) {
+      return this.parseItemAtIndexExpression();
+    }
+
+    if (this.checkItemsFromIndexPhrase()) {
+      return this.parseItemsFromIndexRangeExpression();
+    }
+
+    if (this.checkIndexOfPhrase()) {
+      return this.parseIndexOfExpression();
+    }
+
+    if (this.checkCountPhrase()) {
+      return this.parseCountExpression();
+    }
+
+    if (VALUE_BUILTIN_FUNCTION_KINDS.has(this.peek().kind)) {
+      return this.parseBuiltinCallExpression();
+    }
+
+    if (this.match(TOKEN_KINDS.NUMBER)) {
+      const token = this.advance();
+      return {
+        type: "LiteralExpression",
+        valueType: "number",
+        value: Number(token.lexeme),
+        raw: token.lexeme
+      };
+    }
+
+    if (this.match(TOKEN_KINDS.STRING)) {
+      const token = this.advance();
+      return {
+        type: "LiteralExpression",
+        valueType: "string",
+        value: JSON.parse(token.lexeme),
+        raw: token.lexeme
+      };
+    }
+
+    if (this.match(TOKEN_KINDS.BOOLEAN)) {
+      const token = this.advance();
+      return {
+        type: "LiteralExpression",
+        valueType: "boolean",
+        value: this.toBooleanValue(token.lexeme),
+        raw: token.lexeme
+      };
+    }
+
+    return this.parseReferenceExpression(boundaryWords);
+  }
+
+  parsePropertyAccessExpression(boundaryKinds = new Set(), boundaryWords = new Set()) {
+    this.consumeOptionalArticle();
+    const propertyNameParts = this.parseNormalizedName({
+      boundaryWords: new Set(["of"]),
+      errorMessage: "Expected a property name"
+    });
+    this.consumeWord("of", "Expected 'of' after the property name");
+    const instanceNameParts = this.parseNormalizedName({
+      boundaryKinds,
+      boundaryWords,
+      errorMessage: "Expected an instance name"
+    });
+
+    return {
+      type: "PropertyAccessExpression",
+      propertyNameParts,
+      instanceNameParts
+    };
+  }
+
+  parseSelfPropertyExpression(boundaryKinds = new Set()) {
+    if (this.actionDepth === 0) {
+      throw this.error(this.peek(), "its is only allowed inside actions");
+    }
+
+    this.consume(TOKEN_KINDS.ITS, "Expected 'its' in a self property expression");
+    return {
+      type: "SelfPropertyExpression",
+      propertyNameParts: this.parseNormalizedName({
+        boundaryKinds,
+        errorMessage: "Expected a property name after 'its'"
+      })
+    };
+  }
+
+  parseAnonymousCallableExpression(isReturning) {
+    if (!isReturning) {
+      this.consume(TOKEN_KINDS.DO, "Expected 'do' to start an anonymous callable");
+      this.consume(TOKEN_KINDS.THIS, "Expected 'this' after 'do'");
+    } else {
+      this.consume(TOKEN_KINDS.THIS, "Expected 'this' after 'the result of'");
+    }
+
+    const params = [];
+    if (this.matchWord("using")) {
+      this.advance();
+      params.push(
+        this.parseNormalizedName({
+          boundaryKinds: new Set([TOKEN_KINDS.COLON]),
+          errorMessage: "Expected a callable parameter name",
+          stopAtAndSeparator: true,
+          stopAtAndReturnsPhrase: true
+        })
+      );
+
+      while (this.match(TOKEN_KINDS.AND) && !this.checkAndReturnsPhrase()) {
+        this.advance();
+        params.push(
+          this.parseNormalizedName({
+            boundaryKinds: new Set([TOKEN_KINDS.COLON]),
+            errorMessage: "Expected a callable parameter name",
+            stopAtAndSeparator: true,
+            stopAtAndReturnsPhrase: true
+          })
+        );
+      }
+    }
+
+    let returnType = null;
+    if (isReturning) {
+      if (!this.checkAndReturnsPhrase()) {
+        throw this.error(this.peek(), "Returning anonymous callables must declare 'and returns <Type>'");
+      }
+
+      this.advance();
+      this.consume(TOKEN_KINDS.RETURNS, "Expected 'returns' after 'and'");
+      returnType = this.parseTypeReference();
+    } else if (this.checkAndReturnsPhrase()) {
+      throw this.error(this.peek(), "Non-returning anonymous callables cannot declare a return type");
+    }
+
+    const body = this.parseFunctionBlock(isReturning, []);
+
+    return {
+      type: "AnonymousCallableExpression",
+      params,
+      returnType,
+      body,
+      isReturning
+    };
+  }
+
   parseListExpression() {
-    this.consume(TOKEN_KINDS.THE, "Expected 'the' before 'list of (...)'");
+    this.consumeOptionalArticle();
     this.consume(TOKEN_KINDS.LIST, "Expected 'list' in 'the list of (...)'");
     this.consumeWord("of", "Expected 'of' in 'the list of (...)'");
     this.consume(TOKEN_KINDS.LPAREN, "Expected '(' after 'the list of'");
@@ -716,7 +2100,8 @@ class FlowScriptParser {
     }
 
     this.index = checkpoint;
-    return null;
+    this.consume(TOKEN_KINDS.IS, "Expected 'is' in the comparison");
+    return "EQUAL";
   }
 
   parseCollectionPredicate() {
@@ -1102,97 +2487,69 @@ class FlowScriptParser {
     throw this.error(this.peek(), "Expected 'List' or 'Set'");
   }
 
-  parseCollectionName() {
-    const nameParts = [];
-
-    while (!this.isAtEnd()) {
-      const token = this.peek();
-      if (token.kind === TOKEN_KINDS.DOT || token.kind === TOKEN_KINDS.NEWLINE || token.kind === TOKEN_KINDS.EOF) {
-        break;
-      }
-
-      if (token.kind === TOKEN_KINDS.WORD && ["defined", "from"].includes(token.lexeme.toLowerCase())) {
-        break;
-      }
-
-      if (token.kind !== TOKEN_KINDS.WORD) {
-        throw this.error(token, "Expected a collection name");
-      }
-
-      nameParts.push(this.advance().lexeme);
-    }
-
-    if (nameParts.length === 0) {
-      throw this.error(this.peek(), "Expected a collection name");
-    }
-
-    return nameParts;
-  }
-
-  parseCollectionSourceReference(boundaryWords, boundaryKinds) {
-    if (this.match(TOKEN_KINDS.THE)) {
+  parseTypeReference() {
+    if (this.match(TOKEN_KINDS.LIST)) {
       this.advance();
-    }
-
-    const nameParts = [];
-
-    while (!this.isAtEnd()) {
-      const token = this.peek();
-      if (boundaryKinds.has(token.kind)) {
-        break;
-      }
-
-      if (token.kind === TOKEN_KINDS.WORD && boundaryWords.has(token.lexeme.toLowerCase())) {
-        break;
-      }
-
-      if (token.kind !== TOKEN_KINDS.WORD) {
-        throw this.error(token, "Expected a collection source name");
-      }
-
-      nameParts.push(this.advance().lexeme);
-    }
-
-    if (nameParts.length === 0) {
-      throw this.error(this.peek(), "Expected a collection source name");
+      this.consumeWord("of", "Expected 'of' after 'List'");
+      return {
+        kind: "list",
+        itemType: this.parseTypeReference()
+      };
     }
 
     return {
+      kind: "named",
+      nameParts: this.parseNormalizedName({
+        boundaryKinds: new Set([TOKEN_KINDS.COMMA, TOKEN_KINDS.RPAREN, TOKEN_KINDS.COLON, TOKEN_KINDS.NEWLINE, TOKEN_KINDS.DOT]),
+        errorMessage: "Expected a type name"
+      })
+    };
+  }
+
+  parseCollectionName() {
+    return this.parseNormalizedName({
+      boundaryKinds: new Set([TOKEN_KINDS.DOT, TOKEN_KINDS.NEWLINE, TOKEN_KINDS.EOF]),
+      boundaryWords: new Set(["defined", "from"]),
+      errorMessage: "Expected a collection name"
+    });
+  }
+
+  parseCollectionSourceReference(boundaryWords, boundaryKinds) {
+    return {
       type: "ReferenceExpression",
-      nameParts
+      nameParts: this.parseNormalizedName({
+        boundaryKinds,
+        boundaryWords,
+        errorMessage: "Expected a collection source name"
+      })
     };
   }
 
   parseNameUntilWord(expectedWord) {
-    const nameParts = [];
-
-    while (!this.isAtEnd()) {
-      const token = this.peek();
-      if (token.kind === TOKEN_KINDS.WORD && token.lexeme.toLowerCase() === expectedWord.toLowerCase()) {
-        break;
-      }
-
-      if (token.kind !== TOKEN_KINDS.WORD) {
-        throw this.error(token, "Expected a variable name");
-      }
-
-      nameParts.push(this.advance().lexeme);
-    }
-
-    if (nameParts.length === 0) {
-      throw this.error(this.peek(), "Expected a variable name");
-    }
-
-    return nameParts;
+    return this.parseNormalizedName({
+      boundaryWords: new Set([expectedWord.toLowerCase()]),
+      errorMessage: "Expected a variable name"
+    });
   }
 
   parseResultExpression() {
-    this.consume(TOKEN_KINDS.THE, "Expected 'the' before 'result of (...)'");
+    this.consumeOptionalArticle();
     this.consume(TOKEN_KINDS.RESULT, "Expected 'result' in 'the result of (...)'");
     this.consumeWord("of", "Expected 'of' in 'the result of (...)'");
 
+    if (this.matchWord("asking")) {
+      return {
+        type: "ActionCallExpression",
+        ...this.parseActionInvocationAfterAskingWord()
+      };
+    }
+
+    if (this.match(TOKEN_KINDS.THIS)) {
+      return this.parseAnonymousCallableExpression(true);
+    }
+
     if (!this.match(TOKEN_KINDS.LPAREN) && !BUILTIN_FUNCTION_KINDS.has(this.peek().kind)) {
-      throw this.error(this.peek(), "Expected '(' or a math function after 'the result of'");
+      return this.parseFunctionCallExpression();
     }
 
     return {
@@ -1234,6 +2591,42 @@ class FlowScriptParser {
   }
 
   parsePrimaryExpression() {
+    if (this.checkNoValuePhrase()) {
+      return this.parseNoValueLiteralExpression();
+    }
+
+    if (this.matchWord("first")) {
+      return this.parseFirstAccessExpression();
+    }
+
+    if (this.matchWord("last")) {
+      return this.parseLastAccessExpression();
+    }
+
+    if (this.checkItemAtIndexPhrase()) {
+      return this.parseItemAtIndexExpression();
+    }
+
+    if (this.checkItemsFromIndexPhrase()) {
+      return this.parseItemsFromIndexRangeExpression();
+    }
+
+    if (this.checkIndexOfPhrase()) {
+      return this.parseIndexOfExpression();
+    }
+
+    if (this.checkCountPhrase()) {
+      return this.parseCountExpression();
+    }
+
+    if (this.actionDepth > 0 && this.match(TOKEN_KINDS.ITS)) {
+      return this.parseSelfPropertyExpression();
+    }
+
+    if (this.checkPropertyAccessPhrase()) {
+      return this.parsePropertyAccessExpression();
+    }
+
     if (this.match(TOKEN_KINDS.NUMBER)) {
       const token = this.advance();
       return {
@@ -1258,31 +2651,18 @@ class FlowScriptParser {
     return this.parseReferenceExpression();
   }
 
-  parseReferenceExpression() {
-    if (this.match(TOKEN_KINDS.THE)) {
-      this.advance();
-    }
-
+  parseReferenceExpression(boundaryWords = new Set()) {
     if (this.startsSoftWordPhrase()) {
       throw this.error(this.peek(), "Soft words are only allowed at the start of a statement");
     }
 
-    const nameParts = [];
-    while (this.match(TOKEN_KINDS.WORD)) {
-      if (this.startsSoftWordPhrase()) {
-        throw this.error(this.peek(), "Soft words are only allowed at the start of a statement");
-      }
-
-      nameParts.push(this.advance().lexeme);
-    }
-
-    if (nameParts.length === 0) {
-      throw this.error(this.peek(), "Expected a value or variable reference");
-    }
-
     return {
       type: "ReferenceExpression",
-      nameParts
+      nameParts: this.parseNormalizedName({
+        boundaryWords,
+        errorMessage: "Expected a value or variable reference",
+        stopAtHasPhrase: true
+      })
     };
   }
 
@@ -1339,25 +2719,25 @@ class FlowScriptParser {
   }
 
   parseNameUntil(boundaryKinds) {
-    const nameParts = [];
+    return this.parseNormalizedName({
+      boundaryKinds,
+      errorMessage: "Expected a variable name"
+    });
+  }
 
-    while (!this.isAtEnd() && !boundaryKinds.has(this.peek().kind)) {
-      if (this.startsSoftWordPhrase()) {
-        throw this.error(this.peek(), "Soft words are only allowed at the start of a statement");
-      }
+  parseDelimitedValueExpressionList(boundaryKinds) {
+    const values = [this.parseValueExpression()];
 
-      if (!this.match(TOKEN_KINDS.WORD)) {
-        throw this.error(this.peek(), "Expected a variable name");
-      }
-
-      nameParts.push(this.advance().lexeme);
+    while (this.match(TOKEN_KINDS.COMMA)) {
+      this.advance();
+      values.push(this.parseValueExpression());
     }
 
-    if (nameParts.length === 0) {
-      throw this.error(this.peek(), "Expected a variable name");
+    if (!boundaryKinds.has(this.peek().kind)) {
+      throw this.error(this.peek(), "Expected the end of the argument list");
     }
 
-    return nameParts;
+    return values;
   }
 
   consumeLineEnd(message) {
@@ -1424,13 +2804,24 @@ class FlowScriptParser {
     if (
       this.match(TOKEN_KINDS.SET) ||
       this.match(TOKEN_KINDS.PRINT) ||
+      this.match(TOKEN_KINDS.HOW) ||
+      this.match(TOKEN_KINDS.SHARE) ||
+      this.match(TOKEN_KINDS.USE) ||
+      this.match(TOKEN_KINDS.ENSURE) ||
+      this.match(TOKEN_KINDS.VERIFY) ||
+      this.match(TOKEN_KINDS.RETURN) ||
       this.match(TOKEN_KINDS.CREATE) ||
+      this.match(TOKEN_KINDS.DEFINE) ||
+      this.match(TOKEN_KINDS.ASK) ||
       this.match(TOKEN_KINDS.TAKE) ||
       this.match(TOKEN_KINDS.WHEN) ||
       this.match(TOKEN_KINDS.CHECK) ||
       this.match(TOKEN_KINDS.FOR) ||
       this.match(TOKEN_KINDS.REPEAT) ||
-      this.match(TOKEN_KINDS.KEEP)
+      this.match(TOKEN_KINDS.BREAK) ||
+      this.match(TOKEN_KINDS.CONTINUE) ||
+      this.match(TOKEN_KINDS.KEEP) ||
+      this.peek().kind === TOKEN_KINDS.WORD
     ) {
       return;
     }
@@ -1451,21 +2842,243 @@ class FlowScriptParser {
   }
 
   checkResultPhrase() {
+    const offset = this.peekResultTokenOffset();
     return (
-      this.match(TOKEN_KINDS.THE) &&
-      this.tokens[this.index + 1]?.kind === TOKEN_KINDS.RESULT &&
+      offset !== null &&
+      this.tokens[this.index + offset]?.kind === TOKEN_KINDS.RESULT &&
+      this.tokens[this.index + offset + 1]?.kind === TOKEN_KINDS.WORD &&
+      this.tokens[this.index + offset + 1]?.lexeme.toLowerCase() === "of"
+    );
+  }
+
+  checkAnonymousDoThisPhrase() {
+    return this.match(TOKEN_KINDS.DO) && this.tokens[this.index + 1]?.kind === TOKEN_KINDS.THIS;
+  }
+
+  checkListPhrase() {
+    const offset = this.peekListTokenOffset();
+    return (
+      offset !== null &&
+      this.tokens[this.index + offset]?.kind === TOKEN_KINDS.LIST &&
+      this.tokens[this.index + offset + 1]?.kind === TOKEN_KINDS.WORD &&
+      this.tokens[this.index + offset + 1]?.lexeme.toLowerCase() === "of"
+    );
+  }
+
+  checkNoValuePhrase() {
+    return this.peek().lexeme?.toLowerCase?.() === "no" && this.tokens[this.index + 1]?.kind === TOKEN_KINDS.WORD && this.tokens[this.index + 1]?.lexeme.toLowerCase() === "value";
+  }
+
+  checkFirstItemPhrase() {
+    return this.checkWordSequence("first", "item", "of");
+  }
+
+  checkLastItemPhrase() {
+    return this.checkWordSequence("last", "item", "of");
+  }
+
+  checkIndexOfPhrase() {
+    return (
+      this.matchWord("index") &&
+      this.tokens[this.index + 1]?.kind === TOKEN_KINDS.WORD &&
+      this.tokens[this.index + 1]?.lexeme.toLowerCase() === "of"
+    );
+  }
+
+  checkItemAtIndexPhrase() {
+    return this.checkWordSequence("item", "at", "index");
+  }
+
+  checkItemsFromIndexPhrase() {
+    return this.checkWordSequence("items", "from", "index");
+  }
+
+  checkCountPhrase() {
+    return this.checkWordSequence("count", "of");
+  }
+
+  checkAndReturnsPhrase() {
+    return this.match(TOKEN_KINDS.AND) && this.tokens[this.index + 1]?.kind === TOKEN_KINDS.RETURNS;
+  }
+
+  checkHasCollectionPhrase() {
+    return (
+      this.matchWord("has") &&
+      this.tokens[this.index + 1]?.kind === TOKEN_KINDS.WORD &&
+      ["any", "all"].includes(this.tokens[this.index + 1]?.lexeme.toLowerCase()) &&
       this.tokens[this.index + 2]?.kind === TOKEN_KINDS.WORD &&
       this.tokens[this.index + 2]?.lexeme.toLowerCase() === "of"
     );
   }
 
-  checkListPhrase() {
-    return (
-      this.match(TOKEN_KINDS.THE) &&
-      this.tokens[this.index + 1]?.kind === TOKEN_KINDS.LIST &&
-      this.tokens[this.index + 2]?.kind === TOKEN_KINDS.WORD &&
-      this.tokens[this.index + 2]?.lexeme.toLowerCase() === "of"
-    );
+  checkPropertyAccessPhrase() {
+    if (!this.isIgnorableArticleToken(this.peek())) {
+      return false;
+    }
+
+    let offset = 0;
+    let sawPropertyWord = false;
+
+    while (!this.isAtEnd()) {
+      const token = this.tokens[this.index + offset];
+
+      if (!token) {
+        return false;
+      }
+
+      if (this.isIgnorableArticleToken(token)) {
+        offset += 1;
+        continue;
+      }
+
+      if (token.kind !== TOKEN_KINDS.WORD) {
+        return false;
+      }
+
+      if (token.lexeme.toLowerCase() === "of") {
+        return sawPropertyWord;
+      }
+
+      sawPropertyWord = true;
+      offset += 1;
+    }
+
+    return false;
+  }
+
+  checkFunctionCallStatementStart() {
+    return this.checkPropertyAccessPhrase() || (this.actionDepth > 0 && this.match(TOKEN_KINDS.ITS));
+  }
+
+  peekResultTokenOffset() {
+    if (this.match(TOKEN_KINDS.RESULT)) {
+      return 0;
+    }
+
+    if (this.isIgnorableArticleToken(this.peek())) {
+      return 1;
+    }
+
+    return null;
+  }
+
+  peekListTokenOffset() {
+    if (this.match(TOKEN_KINDS.LIST)) {
+      return 0;
+    }
+
+    if (this.isIgnorableArticleToken(this.peek())) {
+      return 1;
+    }
+
+    return null;
+  }
+
+  isIgnorableArticleToken(token) {
+    if (!token) {
+      return false;
+    }
+
+    if (token.kind === TOKEN_KINDS.THE) {
+      return true;
+    }
+
+    return token.kind === TOKEN_KINDS.WORD && ["a", "an"].includes(token.lexeme.toLowerCase());
+  }
+
+  consumeOptionalArticle() {
+    if (this.isIgnorableArticleToken(this.peek())) {
+      this.advance();
+    }
+  }
+
+  parseOptionalAccessModifier() {
+    if (this.match(TOKEN_KINDS.PRIVATE)) {
+      this.advance();
+      return "private";
+    }
+
+    if (this.match(TOKEN_KINDS.PROTECTED)) {
+      this.advance();
+      return "protected";
+    }
+
+    if (this.match(TOKEN_KINDS.PUBLIC)) {
+      this.advance();
+      return "public";
+    }
+
+    return "public";
+  }
+
+  parseRequiredAccessModifier() {
+    if (!this.match(TOKEN_KINDS.PUBLIC) && !this.match(TOKEN_KINDS.PRIVATE) && !this.match(TOKEN_KINDS.PROTECTED)) {
+      throw this.error(this.peek(), "Expected 'private', 'protected', or 'public'");
+    }
+
+    return this.parseOptionalAccessModifier();
+  }
+
+  parseNormalizedName({
+    boundaryKinds = new Set(),
+    boundaryWords = new Set(),
+    errorMessage,
+    stopAtHasPhrase = false,
+    stopAtAndSeparator = false,
+    stopAtAndReturnsPhrase = false
+  }) {
+    const nameParts = [];
+
+    while (!this.isAtEnd() && !boundaryKinds.has(this.peek().kind)) {
+      if (this.startsSoftWordPhrase()) {
+        throw this.error(this.peek(), "Soft words are only allowed at the start of a statement");
+      }
+
+      if (this.peek().kind === TOKEN_KINDS.WORD && boundaryWords.has(this.peek().lexeme.toLowerCase())) {
+        break;
+      }
+
+      if (stopAtHasPhrase && nameParts.length > 0 && this.checkHasCollectionPhrase()) {
+        break;
+      }
+
+      if (stopAtAndSeparator && nameParts.length > 0 && this.match(TOKEN_KINDS.AND) && !this.checkAndReturnsPhrase()) {
+        break;
+      }
+
+      if (stopAtAndReturnsPhrase && nameParts.length > 0 && this.checkAndReturnsPhrase()) {
+        break;
+      }
+
+      if (this.isIgnorableArticleToken(this.peek())) {
+        this.advance();
+        continue;
+      }
+
+      if (this.peek().kind !== TOKEN_KINDS.WORD) {
+        if (nameParts.length > 0) {
+          break;
+        }
+
+        throw this.error(this.peek(), errorMessage);
+      }
+
+      nameParts.push(this.advance().lexeme);
+    }
+
+    if (nameParts.length === 0) {
+      throw this.error(this.peek(), errorMessage);
+    }
+
+    return nameParts;
+  }
+
+  currentBlockContext() {
+    return this.blockContextStack.at(-1) ?? null;
+  }
+
+  isCurrentExpressionBoundary(kind) {
+    return this.expressionBoundaryStack.some((boundaryKinds) => boundaryKinds.has(kind));
   }
 
   consumeWord(expectedLexeme, message) {
@@ -1494,11 +3107,24 @@ class FlowScriptParser {
   }
 
   startsSoftWordPhrase() {
-    return this.checkWordSequence("so") || this.checkWordSequence("then") || this.checkWordSequence("that's", "why");
+    return (
+      this.checkWordSequence("so") ||
+      this.checkWordSequence("then") ||
+      this.checkWordSequence("also") ||
+      this.checkWordSequence("therefore") ||
+      this.checkWordSequence("meanwhile") ||
+      this.checkWordSequence("that's", "why")
+    );
   }
 
   advanceSoftWordPhrase() {
-    if (this.checkWordSequence("so") || this.checkWordSequence("then")) {
+    if (
+      this.checkWordSequence("so") ||
+      this.checkWordSequence("then") ||
+      this.checkWordSequence("also") ||
+      this.checkWordSequence("therefore") ||
+      this.checkWordSequence("meanwhile")
+    ) {
       this.advance();
       return;
     }
@@ -1512,7 +3138,7 @@ class FlowScriptParser {
   checkWordSequence(...words) {
     for (let offset = 0; offset < words.length; offset += 1) {
       const token = this.tokens[this.index + offset];
-      if (!token || token.kind !== TOKEN_KINDS.WORD || token.lexeme.toLowerCase() !== words[offset]) {
+      if (!token || (token.kind !== TOKEN_KINDS.WORD && token.kind !== TOKEN_KINDS.BOOLEAN) || token.lexeme.toLowerCase() !== words[offset]) {
         return false;
       }
     }

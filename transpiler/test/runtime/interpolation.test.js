@@ -24,6 +24,15 @@ test("runtime interpolates variable references inside stored string values", () 
   assert.deepEqual(result.output, ["Age is 20"]);
 });
 
+test("runtime normalizes article words inside interpolation references", () => {
+  const result = execute([
+    "Set user age to 20",
+    'Print "Age is (the user age)".'
+  ].join("\n"));
+
+  assert.deepEqual(result.output, ["Age is 20"]);
+});
+
 test("runtime escapes literal parentheses inside strings", () => {
   const result = execute(['Print "Use (( and ))".'].join("\n"));
 

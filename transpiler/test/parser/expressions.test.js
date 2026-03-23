@@ -62,6 +62,93 @@ test("parser builds list literals as value expressions", () => {
   assert.equal(statement.value.items[2].type, "ReferenceExpression");
 });
 
+test("parser builds collection helper expressions", () => {
+  const program = parse([
+    "Set first user to first item of users",
+    "Set third user to item at index 2 of users",
+    "Set middle users to items from index 1 to 3 of users",
+    "Set total users to count of users",
+    "Set first adult to first item of users where Age >= 20",
+    "Set adult count to count of users where Age >= 20"
+  ].join("\n"));
+
+  assert.equal(program.body[0].value.type, "CollectionAccessExpression");
+  assert.equal(program.body[0].value.accessKind, "first");
+  assert.equal(program.body[1].value.type, "CollectionIndexExpression");
+  assert.equal(program.body[2].value.type, "CollectionSliceExpression");
+  assert.equal(program.body[3].value.type, "CollectionCountExpression");
+  assert.equal(program.body[4].value.type, "CollectionAccessExpression");
+  assert.equal(program.body[4].value.where.type, "ComparisonExpression");
+  assert.equal(program.body[5].value.type, "CollectionCountExpression");
+  assert.equal(program.body[5].value.where.type, "ComparisonExpression");
+});
+
+test("parser builds no value comparisons and collection predicates", () => {
+  const program = parse([
+    "When item at index 0 of users is no value:",
+    "    Print \"Missing\".",
+    "Set has alice to users contains item \"Alice\"",
+    "Set users empty to users is empty"
+  ].join("\n"));
+
+  assert.equal(program.body[0].type, "WhenStatement");
+  assert.equal(program.body[0].branches[0].condition.type, "ComparisonExpression");
+  assert.equal(program.body[0].branches[0].condition.right.valueType, "no_value");
+  assert.equal(program.body[1].value.type, "CollectionContainsExpression");
+  assert.equal(program.body[2].value.type, "CollectionIsEmptyExpression");
+});
+
+test("parser builds extended collection helper expressions", () => {
+  const program = parse([
+    "Set first users to first 3 items of users",
+    "Set last users to last 2 items of users",
+    'Set alice index to index of "Alice" in users',
+    'Set has any match to users has any of ("Alice", "Bob")',
+    'Set has all match to users has all of ("Alice", "Bob")'
+  ].join("\n"));
+
+  assert.equal(program.body[0].value.type, "CollectionTakeExpression");
+  assert.equal(program.body[0].value.side, "first");
+  assert.equal(program.body[1].value.type, "CollectionTakeExpression");
+  assert.equal(program.body[1].value.side, "last");
+  assert.equal(program.body[2].value.type, "CollectionIndexOfExpression");
+  assert.equal(program.body[3].value.type, "CollectionHasExpression");
+  assert.equal(program.body[3].value.mode, "any");
+  assert.equal(program.body[4].value.type, "CollectionHasExpression");
+  assert.equal(program.body[4].value.mode, "all");
+});
+
+test("parser keeps phrase-style references that start with first or last", () => {
+  const program = parse("Set full name to first name joined with last name");
+  const statement = program.body[0];
+
+  assert.equal(statement.value.type, "StringOperationExpression");
+  assert.equal(statement.value.left.type, "ReferenceExpression");
+  assert.deepEqual(statement.value.left.nameParts, ["first", "name"]);
+  assert.equal(statement.value.right.type, "ReferenceExpression");
+  assert.deepEqual(statement.value.right.nameParts, ["last", "name"]);
+});
+
+test("parser normalizes article words inside names and references", () => {
+  const program = parse([
+    "Set the user age to 20",
+    "Print a user age.",
+    "Set theme color to 1"
+  ].join("\n"));
+
+  assert.deepEqual(program.body[0].nameParts, ["user", "age"]);
+  assert.deepEqual(program.body[1].value.nameParts, ["user", "age"]);
+  assert.deepEqual(program.body[2].nameParts, ["theme", "color"]);
+});
+
+test("parser rejects non-literal has any/all item lists", () => {
+  assert.throws(() => parse("Set has any match to users has any of (candidate user)"), (error) => {
+    assert.ok(error instanceof ParserError);
+    assert.match(error.message, /literal item list/);
+    return true;
+  });
+});
+
 test("parser rejects non-literal fixed precision values", () => {
   assert.throws(() => parse("Set total label to fixed(total, tax rate)"), (error) => {
     assert.ok(error instanceof ParserError);

@@ -42,6 +42,43 @@ Create a Set called tags defined as:
 
 The repeated `"vip"` value is removed, and iteration keeps the first-seen order.
 
+## Collection Helpers
+
+FlowScript supports sentence-style access helpers for lists and sets.
+
+```flow
+Set first user to first item of users
+Set first user to first item of the users
+Set last tag to last item of tags
+Set first users to first 3 items of users
+Set last users to last 2 items of users
+Set picked user to item at index 2 of users
+Set alice index to index of "Alice" in users
+Set user slice to items from index 1 to 5 of users
+Set total users to count of users
+Set first adult to first item of users where Age >= 20
+Set adult count to count of users where Age >= 20
+Set users empty to users is empty
+Set has alice to users contains item "Alice"
+Set has any match to users has any of ("Alice", "Bob")
+Set has all match to users has all of ("Alice", "Bob")
+```
+
+Rules:
+
+- indexes are zero-based
+- range ends are inclusive
+- `first item of ...` and `last item of ...` return `no value` for empty collections
+- `first N items of ...` and `last N items of ...` always return a list
+- `index of ... in ...` returns a zero-based index or `no value`
+- `item at index ... of ...` returns `no value` when the index is invalid or out of range
+- `items from index ... to ... of ...` always returns a list
+- `first item of ... where ...` returns the first matching item or `no value`
+- `count of ... where ...` returns the number of matching items
+- `has any of (...)` and `has all of (...)` use literal item lists in v1
+- sets use insertion order for access and slicing
+- article words such as `a`, `an`, and `the` are ignored in collection names and collection references
+
 ## Pipelines
 
 Use `Take ...:` when you want to process a collection step by step.
@@ -87,6 +124,27 @@ Repeat 3 times:
 ```
 
 The repeat count must evaluate to a non-negative integer.
+
+## Break
+
+Use `Break` when a loop should stop immediately.
+
+```flow
+Repeat 10 times:
+    Print "Tick".
+    Break.
+```
+
+## Continue
+
+Use `Continue` when the current iteration should be skipped.
+
+```flow
+For each item in numbers:
+    When item is equal to 2:
+        Continue.
+    Print item.
+```
 
 ## Keep doing this while
 
