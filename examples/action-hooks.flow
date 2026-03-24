@@ -1,0 +1,25 @@
+Define a Type called User:
+    It has a public Email (Text).
+    Before "Update Email" using next email:
+        Print "Before update".
+        Print next email.
+    After "Update Email" using next email:
+        Print "After update".
+        Print its Email.
+    It can "Update Email" as public using next email:
+        Set its Email to next email.
+        Print "Action body".
+
+Define a Type called Admin which is a kind of User:
+    Before "Update Email" using next email:
+        Print "Admin before".
+    After "Update Email" using next email:
+        Print "Admin after".
+    It can "Update Email" as public using next email:
+        Set its Email to next email.
+        Print "Admin action".
+
+Create an Admin called admin user:
+    Email is "old@example.com"
+
+Ask admin user to "Update Email" using "new@example.com".

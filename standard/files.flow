@@ -1,0 +1,7 @@
+# Built-in-backed standard file library.
+# Import it with:
+# Use read text from file from "./standard/files.flow".
+# Use write text to file from "./standard/files.flow".
+# Use append text to file from "./standard/files.flow".
+# Use file exists from "./standard/files.flow".
+# Use delete file from "./standard/files.flow".

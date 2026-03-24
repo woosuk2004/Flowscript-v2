@@ -102,6 +102,33 @@ Rules:
 - child actions may override parent actions by quoted action name
 - child actions may not narrow visibility when overriding
 
+## Action Hooks
+
+Use `Before "Action Name" ...:` and `After "Action Name" ...:` when logic should run automatically around an action.
+
+```flow
+Define a Type called User:
+    It has a public Email (Text).
+
+    Before "Update Email" using next email:
+        Print next email.
+
+    After "Update Email" using next email:
+        Print its Email.
+
+    It can "Update Email" as public using next email:
+        Set its Email to next email.
+```
+
+Rules:
+
+- `Before` hooks run before the action body
+- `After` hooks run after the action body succeeds
+- hook parameters are positional and must match the target action's arity
+- hooks may use `its ...`, `Ask itself ...`, and `Ask super ...`
+- inherited `Before` hooks run from parent to child
+- inherited `After` hooks run from child to parent
+
 ## Self Reference
 
 Inside an action body, use `its ...` to access the current instance.

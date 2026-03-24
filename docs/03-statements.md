@@ -75,6 +75,8 @@ Ask admin user to "Update Email" using "owner@example.com".
 
 `Ask ...` is the statement form. If an action returns a value and you want to use it in an expression, use `the result of asking ...`.
 
+Inside a type, use `Before "Action Name" ...:` and `After "Action Name" ...:` to attach automatic hooks around an action.
+
 ## Return
 
 Use `Return ...` inside an action that declares `and returns <Type>`.
@@ -113,6 +115,66 @@ Use `Use ... from ...` for named imports, or `Use "./file.flow" as ...` for modu
 ```flow
 Use formatter and parse user from "./text-tools.flow".
 Use "./text-tools.flow" as text tools.
+```
+
+## In the background
+
+Use `In the background:` to start work and keep going without waiting for the result.
+
+```flow
+In the background:
+    send welcome email using user.
+```
+
+## After
+
+Use `After ...:` to schedule work for later.
+
+```flow
+After 5 seconds:
+    send reminder using user.
+```
+
+## Wait for
+
+Use `Wait for ...` to wait for a background task.
+
+```flow
+Wait for email job.
+Wait for email job for 5 seconds.
+```
+
+If you want the produced value, use `the result of wait for ...`.
+
+## Try this
+
+Use `Try this:` and `If it fails:` to recover from failures.
+
+```flow
+Try this:
+    Wait for email job.
+If it fails as error:
+    Print error.
+In any case:
+    Print "Cleanup complete".
+```
+
+## Cancel
+
+Use `Cancel ...` to cancel a pending task handle.
+
+```flow
+Cancel reminder job.
+```
+
+## Files Library Calls
+
+Use `Use ... from "./standard/files.flow"` to import built-in-backed text file functions.
+
+```flow
+Use read text from file and write text to file from "./standard/files.flow".
+Set notes to the result of wait for read text from file using "./notes.txt"
+Wait for write text to file using "./copy.txt" and notes.
 ```
 
 ## Ensure

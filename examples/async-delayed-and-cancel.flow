@@ -1,0 +1,14 @@
+After 5 seconds:
+    Print "Reminder fired".
+
+Set reminder job to the delayed task after 1 minute:
+    Print "This should not run".
+
+Cancel reminder job.
+
+Try this:
+    Wait for reminder job.
+If it fails as error:
+    Print the code of error.
+    Print the kind of error.
+    Print the message of error.

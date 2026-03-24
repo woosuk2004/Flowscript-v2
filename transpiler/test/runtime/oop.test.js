@@ -60,6 +60,75 @@ test("runtime executes actions with its-bound property access, Ask itself, and A
   ]);
 });
 
+test("runtime runs before and after hooks around actions with inherited ordering", () => {
+  const result = execute([
+    "Define a Type called User:",
+    "    It has a public Name (Text).",
+    "    Before \"Rename\" using next name:",
+    '        Print "Parent before".',
+    "    After \"Rename\" using next name:",
+    '        Print "Parent after".',
+    "    It can \"Rename\" as public using next name:",
+    '        Print "Parent action".',
+    "Define a Type called Admin which is a kind of User:",
+    "    Before \"Rename\" using next name:",
+    '        Print "Child before".',
+    "    After \"Rename\" using next name:",
+    '        Print "Child after".',
+    "    It can \"Rename\" as public using next name:",
+    "        Set its Name to next name.",
+    '        Print "Child action".',
+    "Create an Admin called admin user:",
+    '    Name is "Alice"',
+    'Ask admin user to "Rename" using "Bob".',
+    "Print the Name of admin user."
+  ].join("\n"));
+
+  assert.deepEqual(result.output, ["Parent before", "Child before", "Child action", "Child after", "Parent after", "Bob"]);
+});
+
+test("runtime allows action hooks to use action parameters and rejects invalid hook targets", () => {
+  const result = execute([
+    "Define a Type called User:",
+    "    It has a public Email (Text).",
+    "    Before \"Update Email\" using next email:",
+    "        Print next email.",
+    "    After \"Update Email\" using next email:",
+    "        Print its Email.",
+    "    It can \"Update Email\" as public using next email:",
+    "        Set its Email to next email.",
+    "Create a User called sample user:",
+    '    Email is "a@example.com"',
+    'Ask sample user to "Update Email" using "b@example.com".'
+  ].join("\n"));
+
+  assert.deepEqual(result.output, ["b@example.com", "b@example.com"]);
+
+  assert.throws(
+    () =>
+      execute([
+        "Define a Type called User:",
+        "    Before \"Missing\" using value:",
+        "        Print value.",
+        "    It can \"Rename\" as public using next name:",
+        '        Print "noop".'
+      ].join("\n")),
+    /unknown or inaccessible action "Missing"/i
+  );
+
+  assert.throws(
+    () =>
+      execute([
+        "Define a Type called User:",
+        "    Before \"Rename\":",
+        '        Print "wrong".',
+        "    It can \"Rename\" as public using next name:",
+        '        Print "noop".'
+      ].join("\n")),
+    /must use 1 hook parameter\(s\) for action "Rename"/i
+  );
+});
+
 test("runtime runs parent and child When created hooks in order", () => {
   const result = execute([
     "Define a Type called User:",

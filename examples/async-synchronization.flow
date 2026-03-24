@@ -1,0 +1,15 @@
+Set email job to the background task:
+    Print "Preparing email".
+
+Wait for email job.
+Set picked value to the result of wait for any of (email job)
+Print picked value.
+
+Set broken job to the background task:
+    Wait for 10.
+
+Try this:
+    Wait for broken job.
+    Print "Done".
+If it fails:
+    Print "Recovered".

@@ -1,0 +1,14 @@
+Set email job to the background task:
+    Print "Preparing email".
+
+Wait for email job for 5 seconds.
+
+Set broken job to the background task:
+    Wait for 10.
+
+Try this:
+    Wait for broken job for 1 second.
+If it fails as error:
+    Print error.
+In any case:
+    Print "Cleanup complete".

@@ -47,6 +47,8 @@ The current parser recognizes these reserved words:
 
 - `set`
 - `print`
+- `wait`
+- `try`
 - `to`
 - `always`
 - `is`

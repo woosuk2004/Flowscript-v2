@@ -1,0 +1,10 @@
+Use read text from file and write text to file and append text to file and file exists and delete file from "./standard/files.flow".
+
+Wait for write text to file using "./files-demo.txt" and "Hello"
+Wait for append text to file using "./files-demo.txt" and ", FlowScript"
+
+Print the result of wait for read text from file using "./files-demo.txt".
+Print the result of wait for file exists using "./files-demo.txt".
+
+Wait for delete file using "./files-demo.txt".
+Print the result of wait for file exists using "./files-demo.txt".

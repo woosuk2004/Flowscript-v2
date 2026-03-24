@@ -24,6 +24,9 @@ node transpiler/src/cli.js run examples/collections.flow
 node transpiler/src/cli.js run examples/collection-pipeline.flow
 node transpiler/src/cli.js run examples/modules/named-import.flow
 node transpiler/src/cli.js run examples/modules/alias-import.flow
+node transpiler/src/cli.js run examples/async-synchronization.flow
+node transpiler/src/cli.js run examples/files-read-write.flow
+node transpiler/src/cli.js run examples/files-errors.flow
 ```
 
 `run` follows module imports automatically.
@@ -45,6 +48,7 @@ node transpiler/src/cli.js parse examples/collections.flow
 ```bash
 node transpiler/src/cli.js transpile examples/collections.flow
 node transpiler/src/cli.js transpile examples/modules/named-import.flow
+node transpiler/src/cli.js transpile examples/files-read-write.flow
 ```
 
 `transpile` follows module imports automatically and emits one combined JavaScript program for the entry file and its dependencies.

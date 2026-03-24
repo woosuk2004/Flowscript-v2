@@ -3,12 +3,16 @@ import assert from "node:assert/strict";
 
 import { parse } from "../../src/index.js";
 
-test("parser builds encapsulated type declarations, constructor hooks, updated hooks, inheritance, and super calls", () => {
+test("parser builds encapsulated type declarations, action hooks, constructor hooks, updated hooks, inheritance, and super calls", () => {
   const program = parse([
     "Define a Type called User:",
     "    It has a public Name (Text).",
     "    It has a protected Email (Text).",
     "    It has Points (Number, default is 0).",
+    "    Before \"Update Email\" using new email:",
+    "        Print new email.",
+    "    After \"Update Email\" using new email:",
+    "        Print its Email.",
     "    When created using name, email:",
     "        Set its Name to name.",
     "        Set its Email to email.",
@@ -38,6 +42,11 @@ test("parser builds encapsulated type declarations, constructor hooks, updated h
   assert.deepEqual(program.body[0].createdHook.params, [["name"], ["email"]]);
   assert.equal(program.body[0].createdHook.body[0].type, "SetStatement");
   assert.equal(program.body[0].updatedHook.hookKind, "updated");
+  assert.equal(program.body[0].beforeHooks.length, 1);
+  assert.equal(program.body[0].afterHooks.length, 1);
+  assert.equal(program.body[0].beforeHooks[0].actionName, "Update Email");
+  assert.deepEqual(program.body[0].beforeHooks[0].params, [["new", "email"]]);
+  assert.equal(program.body[0].afterHooks[0].body[0].value.type, "SelfPropertyExpression");
   assert.equal(program.body[0].actions.length, 2);
   assert.equal(program.body[0].actions[0].accessLevel, "private");
   assert.equal(program.body[0].actions[1].accessLevel, "public");

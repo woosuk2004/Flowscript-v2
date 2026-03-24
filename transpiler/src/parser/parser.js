@@ -84,6 +84,14 @@ class FlowScriptParser {
       return this.parseUseStatement();
     }
 
+    if (this.match(TOKEN_KINDS.WAIT)) {
+      return this.parseWaitStatement();
+    }
+
+    if (this.match(TOKEN_KINDS.TRY)) {
+      return this.parseTryStatement();
+    }
+
     if (this.match(TOKEN_KINDS.ENSURE)) {
       return this.parseEnsureStatement();
     }
@@ -138,6 +146,18 @@ class FlowScriptParser {
 
     if (this.match(TOKEN_KINDS.KEEP)) {
       return this.parseWhileStatement();
+    }
+
+    if (this.matchWord("cancel")) {
+      return this.parseCancelStatement();
+    }
+
+    if (this.matchWord("after")) {
+      return this.parseAfterStatement();
+    }
+
+    if (this.match(TOKEN_KINDS.IN) && this.checkBackgroundClause()) {
+      return this.parseBackgroundStatement();
     }
 
     if (this.peek().kind === TOKEN_KINDS.WORD || this.checkFunctionCallStatementStart()) {
@@ -521,25 +541,44 @@ class FlowScriptParser {
       };
     }
 
-    const imports = [
-      this.parseNormalizedName({
-        boundaryWords: new Set(["from"]),
-        boundaryKinds: new Set([TOKEN_KINDS.DOT, TOKEN_KINDS.NEWLINE, TOKEN_KINDS.EOF]),
-        errorMessage: "Expected an imported name",
-        stopAtAndSeparator: true
-      })
-    ];
+    const imports = [];
+    let currentImportName = [];
 
-    while (this.match(TOKEN_KINDS.AND)) {
-      this.advance();
-      imports.push(
-        this.parseNormalizedName({
-          boundaryWords: new Set(["from"]),
-          boundaryKinds: new Set([TOKEN_KINDS.DOT, TOKEN_KINDS.NEWLINE, TOKEN_KINDS.EOF]),
-          errorMessage: "Expected an imported name",
-          stopAtAndSeparator: true
-        })
-      );
+    while (!this.isAtEnd()) {
+      if (this.startsSoftWordPhrase()) {
+        throw this.error(this.peek(), "Soft words are only allowed at the start of a statement");
+      }
+
+      if (this.matchWord("from") && this.tokens[this.index + 1]?.kind === TOKEN_KINDS.STRING) {
+        if (currentImportName.length === 0) {
+          throw this.error(this.peek(), "Expected an imported name");
+        }
+
+        imports.push(currentImportName);
+        break;
+      }
+
+      if (this.match(TOKEN_KINDS.AND)) {
+        if (currentImportName.length === 0) {
+          throw this.error(this.peek(), "Expected an imported name");
+        }
+
+        imports.push(currentImportName);
+        currentImportName = [];
+        this.advance();
+        continue;
+      }
+
+      if (this.isIgnorableArticleToken(this.peek())) {
+        this.advance();
+        continue;
+      }
+
+      if (this.peek().kind !== TOKEN_KINDS.WORD && this.peek().kind !== TOKEN_KINDS.TO) {
+        throw this.error(this.peek(), "Expected an imported name");
+      }
+
+      currentImportName.push(this.advance().lexeme);
     }
 
     this.consumeWord("from", "Expected 'from' after the imported name list");
@@ -556,6 +595,99 @@ class FlowScriptParser {
       imports,
       sourcePath,
       terminated
+    };
+  }
+
+  parseBackgroundStatement() {
+    this.consume(TOKEN_KINDS.IN, "Expected 'In' to start a background block");
+    this.consumeOptionalArticle();
+    this.consumeWord("background", "Expected 'background' after 'In'");
+    const body = this.parseBlock("generic");
+
+    return {
+      type: "BackgroundStatement",
+      body
+    };
+  }
+
+  parseWaitStatement() {
+    this.consume(TOKEN_KINDS.WAIT, "Expected 'Wait' to start a wait statement");
+    const target = this.parseWaitTarget();
+    const timeout = this.parseOptionalWaitTimeoutClause();
+    const terminated = this.match(TOKEN_KINDS.DOT);
+    if (terminated) {
+      this.advance();
+    }
+
+    return {
+      type: "WaitStatement",
+      target,
+      timeout,
+      terminated
+    };
+  }
+
+  parseTryStatement() {
+    this.consume(TOKEN_KINDS.TRY, "Expected 'Try' to start a try block");
+    this.consume(TOKEN_KINDS.THIS, "Expected 'this' after 'Try'");
+    const tryBody = this.parseBlock("generic");
+    this.skipIgnorable();
+    this.consumeWord("if", "Expected 'If it fails:' after the try block");
+    this.consumeWord("it", "Expected 'it' after 'If'");
+    this.consumeWord("fails", "Expected 'fails' after 'If it'");
+    let errorNameParts = null;
+    if (this.matchWord("as")) {
+      this.advance();
+      errorNameParts = this.parseNormalizedName({
+        boundaryKinds: new Set([TOKEN_KINDS.COLON]),
+        errorMessage: "Expected an error binding name after 'If it fails as'"
+      });
+    }
+    const failureBody = this.parseBlock("generic");
+    this.skipIgnorable();
+
+    let finallyBody = null;
+    if (this.checkInAnyCasePhrase()) {
+      this.consume(TOKEN_KINDS.IN, "Expected 'In any case:' to start a cleanup block");
+      this.consumeWord("any", "Expected 'any' after 'In'");
+      this.consume(TOKEN_KINDS.CASE, "Expected 'case' after 'In any'");
+      finallyBody = this.parseBlock("generic");
+    }
+
+    return {
+      type: "TryStatement",
+      tryBody,
+      errorNameParts,
+      failureBody,
+      finallyBody
+    };
+  }
+
+  parseCancelStatement() {
+    this.consumeWord("cancel", "Expected 'Cancel' to start a cancel statement");
+    const target = this.parseValueExpressionWithBoundaries(new Set([TOKEN_KINDS.DOT, TOKEN_KINDS.NEWLINE, TOKEN_KINDS.EOF]));
+    this.ensureNoRawArithmetic();
+    const terminated = this.match(TOKEN_KINDS.DOT);
+    if (terminated) {
+      this.advance();
+    }
+
+    return {
+      type: "CancelStatement",
+      target,
+      terminated
+    };
+  }
+
+  parseAfterStatement() {
+    this.consumeWord("after", "Expected 'After' to start a delayed block");
+    const delay = this.parseDelayDuration();
+    const body = this.parseBlock("generic");
+
+    return {
+      type: "DelayedStatement",
+      delay,
+      body
     };
   }
 
@@ -598,6 +730,8 @@ class FlowScriptParser {
     const actions = [];
     let createdHook = null;
     let updatedHook = null;
+    const beforeHooks = [];
+    const afterHooks = [];
     this.skipIgnorable();
 
     while (!this.match(TOKEN_KINDS.DEDENT) && !this.isAtEnd()) {
@@ -620,6 +754,12 @@ class FlowScriptParser {
 
           updatedHook = member;
         }
+      } else if (member.type === "TypeActionHookDeclaration") {
+        if (member.hookKind === "before") {
+          beforeHooks.push(member);
+        } else {
+          afterHooks.push(member);
+        }
       } else {
         actions.push(member);
       }
@@ -636,13 +776,19 @@ class FlowScriptParser {
       properties,
       actions,
       createdHook,
-      updatedHook
+      updatedHook,
+      beforeHooks,
+      afterHooks
     };
   }
 
   parseTypeMember() {
     if (this.match(TOKEN_KINDS.WHEN)) {
       return this.parseTypeInitializationHook();
+    }
+
+    if (this.matchWord("before") || this.matchWord("after")) {
+      return this.parseTypeActionHookDeclaration();
     }
 
     this.consumeWord("it", "Expected 'It' to start a type member declaration");
@@ -728,6 +874,43 @@ class FlowScriptParser {
       nameParts,
       valueType,
       defaultValue
+    };
+  }
+
+  parseTypeActionHookDeclaration() {
+    const hookKeyword = this.peek();
+    if (!this.matchWord("before") && !this.matchWord("after")) {
+      throw this.error(hookKeyword, "Expected 'Before' or 'After' to start an action hook");
+    }
+
+    const hookKind = this.advance().lexeme.toLowerCase();
+    const actionNameToken = this.consume(TOKEN_KINDS.STRING, `Expected a quoted action name after '${hookKind}'`);
+    const actionName = JSON.parse(actionNameToken.lexeme);
+    const params = [];
+
+    if (this.matchWord("using")) {
+      this.advance();
+      params.push(this.parseNormalizedName({
+        boundaryKinds: new Set([TOKEN_KINDS.COLON, TOKEN_KINDS.COMMA]),
+        errorMessage: "Expected a hook parameter name"
+      }));
+
+      while (this.match(TOKEN_KINDS.COMMA)) {
+        this.advance();
+        params.push(this.parseNormalizedName({
+          boundaryKinds: new Set([TOKEN_KINDS.COLON, TOKEN_KINDS.COMMA]),
+          errorMessage: "Expected a hook parameter name"
+        }));
+      }
+    }
+
+    const body = this.parseActionBlock();
+    return {
+      type: "TypeActionHookDeclaration",
+      hookKind,
+      actionName,
+      params,
+      body
     };
   }
 
@@ -1007,7 +1190,8 @@ class FlowScriptParser {
       nameParts: this.parseNormalizedName({
         boundaryKinds: invocationBoundaryKinds,
         boundaryWords: new Set(["using"]),
-        errorMessage: "Expected a function name or callable reference"
+        errorMessage: "Expected a function name or callable reference",
+        extraNameKinds: new Set([TOKEN_KINDS.TO])
       })
     };
   }
@@ -1597,6 +1781,14 @@ class FlowScriptParser {
   }
 
   parseAtomicValueExpression() {
+    if (this.checkDelayedTaskPhrase()) {
+      return this.parseDelayedTaskExpression();
+    }
+
+    if (this.checkBackgroundTaskPhrase()) {
+      return this.parseBackgroundTaskExpression();
+    }
+
     if (this.checkListPhrase()) {
       return this.parseListExpression();
     }
@@ -1938,7 +2130,8 @@ class FlowScriptParser {
     this.consumeOptionalArticle();
     const propertyNameParts = this.parseNormalizedName({
       boundaryWords: new Set(["of"]),
-      errorMessage: "Expected a property name"
+      errorMessage: "Expected a property name",
+      extraNameKinds: new Set([TOKEN_KINDS.TO])
     });
     this.consumeWord("of", "Expected 'of' after the property name");
     const instanceNameParts = this.parseNormalizedName({
@@ -1954,7 +2147,7 @@ class FlowScriptParser {
     };
   }
 
-  parseSelfPropertyExpression(boundaryKinds = new Set()) {
+  parseSelfPropertyExpression(boundaryKinds = new Set(), boundaryWords = new Set()) {
     if (this.actionDepth === 0) {
       throw this.error(this.peek(), "its is only allowed inside actions");
     }
@@ -1964,7 +2157,9 @@ class FlowScriptParser {
       type: "SelfPropertyExpression",
       propertyNameParts: this.parseNormalizedName({
         boundaryKinds,
-        errorMessage: "Expected a property name after 'its'"
+        boundaryWords,
+        errorMessage: "Expected a property name after 'its'",
+        extraNameKinds: new Set([TOKEN_KINDS.TO])
       })
     };
   }
@@ -2537,6 +2732,10 @@ class FlowScriptParser {
     this.consume(TOKEN_KINDS.RESULT, "Expected 'result' in 'the result of (...)'");
     this.consumeWord("of", "Expected 'of' in 'the result of (...)'");
 
+    if (this.match(TOKEN_KINDS.WAIT)) {
+      return this.parseWaitExpression();
+    }
+
     if (this.matchWord("asking")) {
       return {
         type: "ActionCallExpression",
@@ -2556,6 +2755,142 @@ class FlowScriptParser {
       type: "ResultExpression",
       expression: this.parseAdditiveExpression()
     };
+  }
+
+  parseBackgroundTaskExpression() {
+    this.consumeOptionalArticle();
+    this.consumeWord("background", "Expected 'background' in 'the background task:'");
+    this.consumeWord("task", "Expected 'task' after 'background'");
+    const body = this.parseBlock("generic");
+
+    return {
+      type: "BackgroundTaskExpression",
+      body
+    };
+  }
+
+  parseDelayedTaskExpression() {
+    this.consumeOptionalArticle();
+    this.consumeWord("delayed", "Expected 'delayed' in 'the delayed task after ...:'");
+    this.consumeWord("task", "Expected 'task' after 'delayed'");
+    this.consumeWord("after", "Expected 'after' in 'the delayed task after ...:'");
+    const delay = this.parseDelayDuration();
+    const body = this.parseBlock("generic");
+
+    return {
+      type: "DelayedTaskExpression",
+      delay,
+      body
+    };
+  }
+
+  parseWaitExpression() {
+    this.consume(TOKEN_KINDS.WAIT, "Expected 'wait' in 'the result of wait for ...'");
+    return {
+      type: "WaitExpression",
+      target: this.parseWaitTarget(),
+      timeout: this.parseOptionalWaitTimeoutClause()
+    };
+  }
+
+  parseWaitTarget() {
+    this.consume(TOKEN_KINDS.FOR, "Expected 'for' after 'wait'");
+
+    if (this.matchWord("all")) {
+      this.advance();
+      this.consumeWord("of", "Expected 'of' after 'all'");
+      return {
+        type: "WaitAllExpression",
+        tasks: this.parseWaitTaskList()
+      };
+    }
+
+    if (this.matchWord("any")) {
+      this.advance();
+      this.consumeWord("of", "Expected 'of' after 'any'");
+      return {
+        type: "WaitAnyExpression",
+        tasks: this.parseWaitTaskList()
+      };
+    }
+
+    const waitBoundaryKinds = new Set([TOKEN_KINDS.FOR, TOKEN_KINDS.DOT, TOKEN_KINDS.NEWLINE, TOKEN_KINDS.EOF]);
+
+    if (this.hasWordBeforeBoundary("using", waitBoundaryKinds)) {
+      return this.parseFunctionCallExpression();
+    }
+
+    const target = this.parseValueExpressionWithBoundaries(waitBoundaryKinds);
+    this.ensureNoRawArithmetic();
+    return target;
+  }
+
+  parseOptionalWaitTimeoutClause() {
+    if (!this.match(TOKEN_KINDS.FOR)) {
+      return null;
+    }
+
+    this.advance();
+    return this.parseDelayDuration("WaitTimeoutClause");
+  }
+
+  parseDelayDuration(type = "DelayClause") {
+    const amount = this.parseDurationValueExpression();
+    const unit = this.parseWaitTimeoutUnit();
+
+    return {
+      type,
+      amount,
+      unit
+    };
+  }
+
+  parseDurationValueExpression() {
+    const unitWords = new Set(["millisecond", "milliseconds", "second", "seconds", "minute", "minutes"]);
+
+    if (this.actionDepth > 0 && this.match(TOKEN_KINDS.ITS)) {
+      return this.parseSelfPropertyExpression(new Set(), unitWords);
+    }
+
+    if (this.checkPropertyAccessPhrase()) {
+      return this.parsePropertyAccessExpression(new Set(), unitWords);
+    }
+
+    return this.parseCollectionAccessTargetExpression(unitWords);
+  }
+
+  parseWaitTimeoutUnit() {
+    const token = this.peek();
+    const normalizedLexeme = token.lexeme?.toLowerCase?.();
+
+    if (!normalizedLexeme) {
+      throw this.error(token, "Expected a timeout unit such as 'seconds' or 'minutes'");
+    }
+
+    if (!["millisecond", "milliseconds", "second", "seconds", "minute", "minutes"].includes(normalizedLexeme)) {
+      throw this.error(token, "Expected a timeout unit such as 'seconds' or 'minutes'");
+    }
+
+    this.advance();
+    return normalizedLexeme;
+  }
+
+  parseWaitTaskList() {
+    this.consume(TOKEN_KINDS.LPAREN, "Expected '(' to start the wait task list");
+
+    if (this.match(TOKEN_KINDS.RPAREN)) {
+      throw this.error(this.peek(), "Wait task lists cannot be empty");
+    }
+
+    const tasks = [this.parseValueExpression()];
+
+    while (this.match(TOKEN_KINDS.COMMA)) {
+      this.advance();
+      tasks.push(this.parseValueExpression());
+    }
+
+    this.consume(TOKEN_KINDS.RPAREN, "Expected ')' after the wait task list");
+    return tasks;
   }
 
   parseAdditiveExpression() {
@@ -2661,7 +2996,8 @@ class FlowScriptParser {
       nameParts: this.parseNormalizedName({
         boundaryWords,
         errorMessage: "Expected a value or variable reference",
-        stopAtHasPhrase: true
+        stopAtHasPhrase: true,
+        extraNameKinds: new Set([TOKEN_KINDS.TO])
       })
     };
   }
@@ -2807,6 +3143,8 @@ class FlowScriptParser {
       this.match(TOKEN_KINDS.HOW) ||
       this.match(TOKEN_KINDS.SHARE) ||
       this.match(TOKEN_KINDS.USE) ||
+      this.match(TOKEN_KINDS.WAIT) ||
+      this.match(TOKEN_KINDS.TRY) ||
       this.match(TOKEN_KINDS.ENSURE) ||
       this.match(TOKEN_KINDS.VERIFY) ||
       this.match(TOKEN_KINDS.RETURN) ||
@@ -2821,6 +3159,7 @@ class FlowScriptParser {
       this.match(TOKEN_KINDS.BREAK) ||
       this.match(TOKEN_KINDS.CONTINUE) ||
       this.match(TOKEN_KINDS.KEEP) ||
+      (this.match(TOKEN_KINDS.IN) && this.checkBackgroundClause()) ||
       this.peek().kind === TOKEN_KINDS.WORD
     ) {
       return;
@@ -2853,6 +3192,39 @@ class FlowScriptParser {
 
   checkAnonymousDoThisPhrase() {
     return this.match(TOKEN_KINDS.DO) && this.tokens[this.index + 1]?.kind === TOKEN_KINDS.THIS;
+  }
+
+  checkBackgroundClause() {
+    let offset = 1;
+    const nextToken = this.tokens[this.index + offset];
+
+    if (this.isIgnorableArticleToken(nextToken)) {
+      offset += 1;
+    }
+
+    return this.tokens[this.index + offset]?.kind === TOKEN_KINDS.WORD && this.tokens[this.index + offset]?.lexeme.toLowerCase() === "background";
+  }
+
+  checkBackgroundTaskPhrase() {
+    const offset = this.isIgnorableArticleToken(this.peek()) ? 1 : 0;
+    return (
+      this.tokens[this.index + offset]?.kind === TOKEN_KINDS.WORD &&
+      this.tokens[this.index + offset]?.lexeme.toLowerCase() === "background" &&
+      this.tokens[this.index + offset + 1]?.kind === TOKEN_KINDS.WORD &&
+      this.tokens[this.index + offset + 1]?.lexeme.toLowerCase() === "task"
+    );
+  }
+
+  checkDelayedTaskPhrase() {
+    const offset = this.isIgnorableArticleToken(this.peek()) ? 1 : 0;
+    return (
+      this.tokens[this.index + offset]?.kind === TOKEN_KINDS.WORD &&
+      this.tokens[this.index + offset]?.lexeme.toLowerCase() === "delayed" &&
+      this.tokens[this.index + offset + 1]?.kind === TOKEN_KINDS.WORD &&
+      this.tokens[this.index + offset + 1]?.lexeme.toLowerCase() === "task" &&
+      this.tokens[this.index + offset + 2]?.kind === TOKEN_KINDS.WORD &&
+      this.tokens[this.index + offset + 2]?.lexeme.toLowerCase() === "after"
+    );
   }
 
   checkListPhrase() {
@@ -2908,6 +3280,15 @@ class FlowScriptParser {
       ["any", "all"].includes(this.tokens[this.index + 1]?.lexeme.toLowerCase()) &&
       this.tokens[this.index + 2]?.kind === TOKEN_KINDS.WORD &&
       this.tokens[this.index + 2]?.lexeme.toLowerCase() === "of"
+    );
+  }
+
+  checkInAnyCasePhrase() {
+    return (
+      this.match(TOKEN_KINDS.IN) &&
+      this.tokens[this.index + 1]?.kind === TOKEN_KINDS.WORD &&
+      this.tokens[this.index + 1]?.lexeme.toLowerCase() === "any" &&
+      this.tokens[this.index + 2]?.kind === TOKEN_KINDS.CASE
     );
   }
 
@@ -3025,7 +3406,8 @@ class FlowScriptParser {
     errorMessage,
     stopAtHasPhrase = false,
     stopAtAndSeparator = false,
-    stopAtAndReturnsPhrase = false
+    stopAtAndReturnsPhrase = false,
+    extraNameKinds = new Set()
   }) {
     const nameParts = [];
 
@@ -3055,7 +3437,7 @@ class FlowScriptParser {
         continue;
       }
 
-      if (this.peek().kind !== TOKEN_KINDS.WORD) {
+      if (this.peek().kind !== TOKEN_KINDS.WORD && !extraNameKinds.has(this.peek().kind)) {
         if (nameParts.length > 0) {
           break;
         }
@@ -3144,6 +3526,26 @@ class FlowScriptParser {
     }
 
     return true;
+  }
+
+  hasWordBeforeBoundary(expectedWord, boundaryKinds = new Set()) {
+    let offset = 0;
+
+    while (!this.isAtEnd()) {
+      const token = this.tokens[this.index + offset];
+
+      if (!token || boundaryKinds.has(token.kind)) {
+        return false;
+      }
+
+      if (token.kind === TOKEN_KINDS.WORD && token.lexeme.toLowerCase() === expectedWord.toLowerCase()) {
+        return true;
+      }
+
+      offset += 1;
+    }
+
+    return false;
   }
 
   advance() {

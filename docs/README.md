@@ -21,4 +21,6 @@ FlowScript is a sentence-shaped language that is meant to read like a specificat
 15. [Action Return Values](./15-action-return-values.md)
 16. [Functions and Contracts](./16-functions-and-contracts.md)
 17. [Modules](./17-modules.md)
-18. [Current Scope](./18-current-scope.md)
+18. [Async and Synchronization](./18-async-and-synchronization.md)
+19. [Files Library](./19-files-library.md)
+20. [Current Scope](./20-current-scope.md)

@@ -7,6 +7,8 @@ export const KEYWORDS = new Map([
   ["do", TOKEN_KINDS.DO],
   ["share", TOKEN_KINDS.SHARE],
   ["use", TOKEN_KINDS.USE],
+  ["wait", TOKEN_KINDS.WAIT],
+  ["try", TOKEN_KINDS.TRY],
   ["ensure", TOKEN_KINDS.ENSURE],
   ["verify", TOKEN_KINDS.VERIFY],
   ["return", TOKEN_KINDS.RETURN],

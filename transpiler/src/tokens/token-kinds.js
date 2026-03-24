@@ -5,6 +5,8 @@ export const TOKEN_KINDS = {
   DO: "DO",
   SHARE: "SHARE",
   USE: "USE",
+  WAIT: "WAIT",
+  TRY: "TRY",
   ENSURE: "ENSURE",
   VERIFY: "VERIFY",
   RETURN: "RETURN",

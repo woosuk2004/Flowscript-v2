@@ -31,12 +31,14 @@
 - loops with `For each`, `Repeat`, `Keep doing this while`, and `Keep doing this until`
 - loop control with `Break` and `Continue`
 - custom type declarations with `Define a Type called ...`
-- typed object instances, actions, inheritance, encapsulation, constructor parameters, `When created:` and `When updated:` lifecycle hooks, `super`, `its` / `itself` self references, and action return values with `Return ...` plus `the result of asking ...`
+- typed object instances, actions, action hooks with `Before` / `After`, inheritance, encapsulation, constructor parameters, `When created:` and `When updated:` lifecycle hooks, `super`, `its` / `itself` self references, and action return values with `Return ...` plus `the result of asking ...`
 - top-level functions with `How to ...`
 - direct phrase function calls and value-producing `the result of ...`
 - anonymous callable literals with `do this ...:` and `the result of this ...:`
 - function contracts with `Ensure` and `Verify`
 - modules with `Share`, `Use ... from ...`, `Use "./file.flow" as ...`, relative `.flow` paths, module namespaces, and cycle detection
+- background tasks with `In the background:`, `the background task:`, delayed execution with `After ...:` and `the delayed task after ...:`, task cancellation with `Cancel ...`, `Wait for`, wait timeouts, `Wait for all of (...)`, `Wait for any of (...)`, `Try this: / If it fails:`, structured error binding with `If it fails as ...:`, and cleanup with `In any case:`
+- built-in-backed standard file I/O with `Use ... from "./standard/files.flow"` plus `read text from file`, `write text to file`, `append text to file`, `file exists`, and `delete file`
 
 ## Not Yet Implemented
 

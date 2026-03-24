@@ -40,8 +40,14 @@ node transpiler/src/cli.js transpile examples/<file>.flow
 - `collection-helpers.flow`: basic collection helpers such as `first item of`, `last item of`, `count of`, `is empty`, and `contains item`
 - `collection-helpers-v2.flow`: extended collection helpers such as `first N items of`, `last N items of`, `index of ... in ...`, `has any of (...)`, and `has all of (...)`
 - `constructor-super-updated.flow`: a small focused OOP example for constructor parameters, `super`, and `When updated:`
+- `action-hooks.flow`: `Before` / `After` action hooks with inherited ordering and action-parameter access
 - `action-return-values.flow`: returning actions, `Return ...`, and `the result of asking ...`
 - `functions-and-contracts.flow`: top-level functions, direct phrase calls, `Ensure`, and `Verify`
+- `async-synchronization.flow`: background tasks, `Wait for`, `Wait for any of (...)`, and `Try this: / If it fails:`
+- `async-timeouts-and-cleanup.flow`: wait timeouts, `If it fails as error:`, and cleanup with `In any case:`
+- `async-delayed-and-cancel.flow`: delayed execution with `After ...:`, delayed task handles, cancellation, and structured async errors
+- `files-read-write.flow`: built-in file I/O with `./standard/files.flow`, including read, write, append, exists, and delete
+- `files-errors.flow`: structured file error handling with `If it fails as error:`
 - `anonymous-callables.flow`: anonymous callable literals with `do this`, `the result of this`, closure over outer state, and callable values in parameters and properties
 - `types-and-objects.flow`: type declarations, constructor parameters, `When created:` and `When updated:` hooks, encapsulation, inheritance, `super`, property access, and `Ask`
 - `modules/named-import.flow`: named imports with `Use ... from ...`, a shared type, and a shared callable value
